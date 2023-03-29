@@ -136,3 +136,4 @@ dmypy.json
 *.4
 */**/results
 wikicleaner/wiki_results
+*.pkl

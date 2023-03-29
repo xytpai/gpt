@@ -49,19 +49,20 @@ def prepare_loader(args, dataset):
 
 def prepare_optimizer(args, model):
     lr_base = args.lr_base
-    weight_decay = args.weight_decay
-    momentum = args.momentum
-    params = []
-    for key, value in model.named_parameters():
-        if not value.requires_grad:
-            continue
-        _lr = lr_base
-        _weight_decay = weight_decay
-        if "bias" in key:
-            _lr = lr_base * 2
-            _weight_decay = 0
-        params += [{"params": [value], "lr": _lr, "weight_decay": _weight_decay}]
-    opt = torch.optim.SGD(params, lr=_lr, momentum=momentum)
+    # weight_decay = args.weight_decay
+    # momentum = args.momentum
+    # params = []
+    # for key, value in model.named_parameters():
+    #     if not value.requires_grad:
+    #         continue
+    #     _lr = lr_base
+    #     _weight_decay = weight_decay
+    #     if "bias" in key:
+    #         _lr = lr_base * 2
+    #         _weight_decay = 0
+    #     params += [{"params": [value], "lr": _lr, "weight_decay": _weight_decay}]
+    # opt = torch.optim.SGD(params, lr=_lr, momentum=momentum)
+    opt = torch.optim.Adam(model.parameters(), lr=lr_base)
     return opt
 
 
@@ -74,6 +75,7 @@ class Trainer(object):
         self.opt = opt
         self.step = 0
         self.epoch = 0
+        self.trained_step = 0
         # lr
         # self.grad_clip = cfg['TRAIN']['GRAD_CLIP']
         # self.lr_base = cfg['TRAIN']['LR_BASE']
@@ -85,11 +87,10 @@ class Trainer(object):
         # self.save = cfg['TRAIN']['SAVE']
         
     def step_epoch(self, save_last=False):
-        trained_step = 0
         for i, (x, y) in enumerate(self.loader):
             # lr function
             lr = self.args.lr_base
-            trained_step += x.shape[0]
+            self.trained_step += x.shape[0]
             # if self.step < self.warmup_iters:
             #     alpha = float(self.step) / self.warmup_iters
             #     warmup_factor = self.warmup_factor * (1.0 - alpha) + alpha
@@ -119,10 +120,14 @@ class Trainer(object):
             time_end = time.time()
             totaltime = int((time_end - time_start) * 1000)
             print('total_step:%d: epoch:%d, step:%d/%d, loss:%f, maxMem:%dMB, time:%dms, lr:%f' % \
-                (self.step, self.epoch, trained_step, len(self.dataset), loss, maxmem, totaltime, lr))
+                (self.step, self.epoch, self.trained_step, len(self.dataset), loss, maxmem, totaltime, lr))
             self.step += 1
         self.epoch += 1
-        return False
+        if self.trained_step >= args.end_step:
+            torch.save(self.model.module.state_dict(), 'gpt.pkl')
+            return True
+        else:
+            return False
 
 
 def main(args):
@@ -140,24 +145,25 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GPT Training')
-    parser.add_argument('--hidden_size', type=int, default=64)
-    parser.add_argument('--num_attention_heads', type=int, default=8)
+    parser.add_argument('--hidden_size', type=int, default=256)
+    parser.add_argument('--num_attention_heads', type=int, default=16)
     parser.add_argument('--vocab_size', type=int, default=119547)
     parser.add_argument('--dropout_prob', type=int, default=0.1)
-    parser.add_argument('--max_position_embeddings', type=int, default=4)
-    parser.add_argument('--num_layers', type=int, default=6)
-    parser.add_argument('--ignore_index', type=int, default=-1)
-    parser.add_argument('--batch_size', type=int, default=2)
+    parser.add_argument('--max_position_embeddings', type=int, default=128)
+    parser.add_argument('--num_layers', type=int, default=12)
+    parser.add_argument('--ignore_index', type=int, default=0)
+    parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=float, default=0)
     parser.add_argument('--devices', type=list, default=[0])
     parser.add_argument('--data', type=str, default="./minidata")
 
-    parser.add_argument('--lr_base', type=float, default=0.1)
+    parser.add_argument('--lr_base', type=float, default=1e-3)
     parser.add_argument('--weight_decay', type=float, default=0.1)
     parser.add_argument('--momentum', type=float, default=0.001)
     parser.add_argument('--grad_clip', type=float, default=1.0)
 
+    parser.add_argument('--end_step', type=int, default=14322*4)
 
     args = parser.parse_args()
     main(args)
