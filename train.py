@@ -83,7 +83,7 @@ class Trainer(object):
         self.pbar = tqdm(total=args.end)
         self.pbar.update(args.begin)
         self.tensorboard = SummaryWriter('summary')
-        self.first_run = True
+        self.count_for_save = 0
     
     def __del__(self):
         self.tensorboard.close()
@@ -104,9 +104,6 @@ class Trainer(object):
             torch.cuda.synchronize()
             time_start = time.time()
             self.opt.zero_grad()
-            if self.first_run:
-                # self.tensorboard.add_graph(self.model, [x, y])
-                self.first_run = False
             output, loss = self.model(x, y)
             loss = loss.mean()
             loss.backward()
@@ -118,6 +115,7 @@ class Trainer(object):
             totaltime = int((time_end - time_start) * 1000)
             maxmem = int(torch.cuda.max_memory_allocated(device=self.args.devices[0]) / 1024 / 1024)
             self.milestone += batch_size
+            self.count_for_save += batch_size
             info = 'loss:%f, maxMem:%dMB, time:%dms, lr:%f' % (loss, maxmem, totaltime, lr)
             self.pbar.set_description(info)
             self.tensorboard.add_scalar('loss', loss, self.milestone)
@@ -126,8 +124,9 @@ class Trainer(object):
                 torch.save(self.model.module.state_dict(), self.get_weight_filename())
                 self.pbar.close()
                 return True
-            elif self.milestone % self.args.save_interval == 0:
+            elif self.count_for_save >= self.args.save_interval:
                 torch.save(self.model.module.state_dict(), self.get_weight_filename())
+                self.count_for_save = 0
         return False
 
 
