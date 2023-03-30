@@ -19,7 +19,7 @@ class Inferencer(object):
         ids = self.tokenizer.convert_tokens_to_ids(tokens)
         ids = torch.LongTensor(ids).view(1, -1).cuda()
         with torch.no_grad():
-            ids_o = self.model.generate(ids, 128)
+            ids_o = self.model.generate(ids, self.args.max_position_embeddings * 2)
             ids_o = list(ids_o.cpu()[0].numpy())
             ids_inv = self.tokenizer.convert_ids_to_tokens(ids_o)
             ids_inv = [x for x in ids_inv if x != '[UNK]']

@@ -105,7 +105,7 @@ class Trainer(object):
             time_start = time.time()
             self.opt.zero_grad()
             if self.first_run:
-                self.tensorboard.add_graph(self.model, [x, y])
+                # self.tensorboard.add_graph(self.model, [x, y])
                 self.first_run = False
             output, loss = self.model(x, y)
             loss = loss.mean()
