@@ -83,6 +83,7 @@ class Trainer(object):
         self.pbar = tqdm(total=args.end)
         self.pbar.update(args.begin)
         self.tensorboard = SummaryWriter('summary')
+        self.first_run = True
     
     def __del__(self):
         self.tensorboard.close()
@@ -103,6 +104,9 @@ class Trainer(object):
             torch.cuda.synchronize()
             time_start = time.time()
             self.opt.zero_grad()
+            if self.first_run:
+                self.tensorboard.add_graph(self.model, [x, y])
+                self.first_run = False
             output, loss = self.model(x, y)
             loss = loss.mean()
             loss.backward()
