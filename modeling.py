@@ -13,7 +13,7 @@ class GPTConfig:
     dropout_prob: float = 0.1
     max_position_embeddings: int = 512
     num_layers: int = 12
-    ignore_index: int = -1
+    ignore_index: int = 0
 
 
 class CausalAttentionBlock(nn.Module):
@@ -135,7 +135,7 @@ if __name__ == '__main__':
     print(pred)
     masked_lm_labels = torch.randn(2, 10) * 100
     masked_lm_labels = masked_lm_labels.long().cuda()
-    masked_lm_labels[masked_lm_labels < 50] = -1
+    masked_lm_labels[masked_lm_labels < 50] = config.ignore_index
     pred, loss = model(fake_input, masked_lm_labels)
     print(loss)
     loss.backward()

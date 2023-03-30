@@ -7,6 +7,7 @@ import torch
 import modeling
 import tokenization
 import datasets
+from configs import gptconfigs
 
 
 def prepare_device(args):
@@ -145,13 +146,8 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GPT Training')
-    parser.add_argument('--hidden_size', type=int, default=256)
-    parser.add_argument('--num_attention_heads', type=int, default=16)
-    parser.add_argument('--vocab_size', type=int, default=119547)
-    parser.add_argument('--dropout_prob', type=int, default=0.1)
-    parser.add_argument('--max_position_embeddings', type=int, default=128)
-    parser.add_argument('--num_layers', type=int, default=12)
-    parser.add_argument('--ignore_index', type=int, default=0)
+    parser.add_argument('--model', type=str, default='nano')
+
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=float, default=0)
@@ -166,4 +162,6 @@ if __name__ == '__main__':
     parser.add_argument('--end_step', type=int, default=14322*2)
 
     args = parser.parse_args()
-    main(args)
+    new_args = gptconfigs[args.model]
+    new_args.update(vars(args))
+    main(new_args)
