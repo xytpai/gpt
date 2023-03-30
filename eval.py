@@ -3,6 +3,8 @@ import torch
 
 import modeling
 import tokenization
+from configs import gptconfigs
+from train import load_model
 
 
 class Inferencer(object):
@@ -34,7 +36,7 @@ def main(args):
         ignore_index=args.ignore_index,
     )
     model = modeling.GPT(config)
-    model.load_state_dict(torch.load('gpt.pkl', map_location='cpu'))
+    load_model(args, model)
     model = model.cuda(args.devices[0])
     model.eval()
     infer = Inferencer(args, model)
@@ -43,26 +45,11 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='GPT Training')
-    parser.add_argument('--hidden_size', type=int, default=256)
-    parser.add_argument('--num_attention_heads', type=int, default=16)
-    parser.add_argument('--vocab_size', type=int, default=119547)
-    parser.add_argument('--dropout_prob', type=int, default=0.1)
-    parser.add_argument('--max_position_embeddings', type=int, default=128)
-    parser.add_argument('--num_layers', type=int, default=12)
-    parser.add_argument('--ignore_index', type=int, default=0)
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--num_workers', type=int, default=0)
-    parser.add_argument('--seed', type=float, default=0)
+    parser = argparse.ArgumentParser(description='GPT Evaluating')
+    parser.add_argument('--model', type=str, default='nano')
     parser.add_argument('--devices', type=list, default=[0])
-    parser.add_argument('--data', type=str, default="./minidata")
-
-    parser.add_argument('--lr_base', type=float, default=0.1)
-    parser.add_argument('--weight_decay', type=float, default=0.1)
-    parser.add_argument('--momentum', type=float, default=0.001)
-    parser.add_argument('--grad_clip', type=float, default=1.0)
-
-    parser.add_argument('--text', type=str, default='你好啊')
-
+    parser.add_argument('--text', type=str, default='')
     args = parser.parse_args()
-    main(args)
+    new_args = gptconfigs[args.model]
+    new_args.update(vars(args))
+    main(new_args)

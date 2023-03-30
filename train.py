@@ -2,12 +2,26 @@ import os
 import random
 import time
 import argparse
+from tqdm import tqdm
 import torch
 
 import modeling
 import tokenization
 import datasets
 from configs import gptconfigs
+
+
+def load_model(args, model):
+    def get_milestone(fname):
+        return int(fname.split('_')[1].replace('.pkl', ''))
+    for path, dir_list, file_list in os.walk('weights'):
+        files = []
+        for file in file_list:
+            if file.endswith('.pkl') and file.startswith(args.model):
+                files.append(file)
+            files = sorted(files, key=lambda x : get_milestone(x), reverse=True)
+            args.begin = get_milestone(files[0])
+            model.load_state_dict(torch.load(os.path.join(path, files[0]), map_location='cpu'))
 
 
 def prepare_device(args):
@@ -31,6 +45,8 @@ def prepare_model(args):
     )
     print('config:', config)
     model = modeling.GPT(config)
+    if args.load:
+        load_model(args, model)
     model = torch.nn.DataParallel(model, device_ids=args.devices)
     model = model.cuda(args.devices[0])
     model.train()
@@ -50,19 +66,6 @@ def prepare_loader(args, dataset):
 
 def prepare_optimizer(args, model):
     lr_base = args.lr_base
-    # weight_decay = args.weight_decay
-    # momentum = args.momentum
-    # params = []
-    # for key, value in model.named_parameters():
-    #     if not value.requires_grad:
-    #         continue
-    #     _lr = lr_base
-    #     _weight_decay = weight_decay
-    #     if "bias" in key:
-    #         _lr = lr_base * 2
-    #         _weight_decay = 0
-    #     params += [{"params": [value], "lr": _lr, "weight_decay": _weight_decay}]
-    # opt = torch.optim.SGD(params, lr=_lr, momentum=momentum)
     opt = torch.optim.Adam(model.parameters(), lr=lr_base)
     return opt
 
@@ -70,44 +73,30 @@ def prepare_optimizer(args, model):
 class Trainer(object):
     def __init__(self, args, model, dataset, loader, opt):
         self.args = args
+        self.model_name = args.model
         self.model = model
         self.dataset = dataset
         self.loader = loader
         self.opt = opt
-        self.step = 0
-        self.epoch = 0
-        self.trained_step = 0
-        # lr
-        # self.grad_clip = cfg['TRAIN']['GRAD_CLIP']
-        # self.lr_base = cfg['TRAIN']['LR_BASE']
-        # self.lr_gamma = cfg['TRAIN']['LR_GAMMA']
-        # self.lr_schedule = cfg['TRAIN']['LR_SCHEDULE']
-        # self.warmup_iters = cfg['TRAIN']['WARMUP_ITER']
-        # self.warmup_factor = 1.0/3.0  
-        # self.device = cfg['TRAIN']['DEVICES']
-        # self.save = cfg['TRAIN']['SAVE']
-        
-    def step_epoch(self, save_last=False):
-        for i, (x, y) in enumerate(self.loader):
-            # lr function
-            lr = self.args.lr_base
-            self.trained_step += x.shape[0]
-            # if self.step < self.warmup_iters:
-            #     alpha = float(self.step) / self.warmup_iters
-            #     warmup_factor = self.warmup_factor * (1.0 - alpha) + alpha
-            #     lr = lr*warmup_factor 
-            # else:
-            #     for j in range(len(self.lr_schedule)):
-            #         if self.step < self.lr_schedule[j]:
-            #             break
-            #         lr *= self.lr_gamma
-            # for param_group in self.opt.param_groups:
-            #     param_group['lr'] = lr
-            # #########
+        self.milestone = args.begin
+        self.pbar = tqdm(total=args.end)
+        self.pbar.update(args.begin)
 
+    def get_weight_filename(self):
+        dirname = './weights'
+        if not os.path.exists(dirname):
+            os.makedirs(dirname)
+        return os.path.join(dirname, self.model_name + '_' + str(self.milestone).zfill(10) + '.pkl')
+
+    def step_epoch(self, save_last=False):
+        if self.milestone >= self.args.end:
+            self.pbar.close()
+            return True
+        for i, (x, y) in enumerate(self.loader):
+            batch_size = x.shape[0]
+            lr = self.args.lr_base
             torch.cuda.synchronize()
             time_start = time.time()
-            
             self.opt.zero_grad()
             output, loss = self.model(x, y)
             loss = loss.mean()
@@ -115,20 +104,22 @@ class Trainer(object):
             if self.args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
             self.opt.step()
-
-            maxmem = int(torch.cuda.max_memory_allocated(device=self.args.devices[0]) / 1024 / 1024)
             torch.cuda.synchronize()
             time_end = time.time()
             totaltime = int((time_end - time_start) * 1000)
-            print('total_step:%d: epoch:%d, step:%d/%d, loss:%f, maxMem:%dMB, time:%dms, lr:%f' % \
-                (self.step, self.epoch, self.trained_step, len(self.dataset), loss, maxmem, totaltime, lr))
-            self.step += 1
-        self.epoch += 1
-        if self.trained_step >= args.end_step:
-            torch.save(self.model.module.state_dict(), 'gpt.pkl')
-            return True
-        else:
-            return False
+            maxmem = int(torch.cuda.max_memory_allocated(device=self.args.devices[0]) / 1024 / 1024)
+            self.milestone += batch_size
+            info = 'milestone:%d/%d, loss:%f, maxMem:%dMB, time:%dms, lr:%f' % \
+                (self.milestone, self.args.end, loss, maxmem, totaltime, lr)
+            self.pbar.set_description(info)
+            self.pbar.update(batch_size)
+            if self.milestone >= self.args.end:
+                torch.save(self.model.module.state_dict(), self.get_weight_filename())
+                self.pbar.close()
+                return True
+            elif self.milestone % self.args.save_interval == 0:
+                torch.save(self.model.module.state_dict(), self.get_weight_filename())
+        return False
 
 
 def main(args):
@@ -147,21 +138,20 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GPT Training')
     parser.add_argument('--model', type=str, default='nano')
-
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=float, default=0)
     parser.add_argument('--devices', type=list, default=[0])
     parser.add_argument('--data', type=str, default="./minidata")
-
     parser.add_argument('--lr_base', type=float, default=1e-3)
-    parser.add_argument('--weight_decay', type=float, default=0.1)
-    parser.add_argument('--momentum', type=float, default=0.001)
     parser.add_argument('--grad_clip', type=float, default=1.0)
-
-    parser.add_argument('--end_step', type=int, default=14322*2)
-
+    parser.add_argument('--load', action='store_false')
+    parser.add_argument('--begin', type=int, default=0)
+    parser.add_argument('--end', type=int, default=14000)
+    parser.add_argument('--save_interval', type=int, default=1000)
     args = parser.parse_args()
+    assert args.begin % args.save_interval == 0
+    assert args.end % args.save_interval == 0
     new_args = gptconfigs[args.model]
     new_args.update(vars(args))
     main(new_args)
