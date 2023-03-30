@@ -4,6 +4,7 @@ import time
 import argparse
 from tqdm import tqdm
 import torch
+from torch.utils.tensorboard import SummaryWriter
 
 import modeling
 import tokenization
@@ -81,6 +82,10 @@ class Trainer(object):
         self.milestone = args.begin
         self.pbar = tqdm(total=args.end)
         self.pbar.update(args.begin)
+        self.tensorboard = SummaryWriter('summary')
+    
+    def __del__(self):
+        self.tensorboard.close()
 
     def get_weight_filename(self):
         dirname = './weights'
@@ -111,6 +116,7 @@ class Trainer(object):
             self.milestone += batch_size
             info = 'loss:%f, maxMem:%dMB, time:%dms, lr:%f' % (loss, maxmem, totaltime, lr)
             self.pbar.set_description(info)
+            self.tensorboard.add_scalar('loss', loss, self.milestone)
             self.pbar.update(batch_size)
             if self.milestone >= self.args.end:
                 torch.save(self.model.module.state_dict(), self.get_weight_filename())
