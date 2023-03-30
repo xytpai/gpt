@@ -163,7 +163,7 @@ if __name__ == '__main__':
     parser.add_argument('--momentum', type=float, default=0.001)
     parser.add_argument('--grad_clip', type=float, default=1.0)
 
-    parser.add_argument('--end_step', type=int, default=14322*4)
+    parser.add_argument('--end_step', type=int, default=14322*2)
 
     args = parser.parse_args()
     main(args)

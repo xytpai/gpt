@@ -1,5 +1,6 @@
 import os
 import random
+import json
 import torch
 import tokenization
 from torch.utils.data import Dataset, DataLoader
@@ -9,7 +10,7 @@ def get_data_file_list(filedir):
     data_file_list = []
     for path, dir_list, file_list in os.walk(filedir):
         for file in file_list:
-            if file.endswith('.data'):
+            if file.endswith('.jsonl'):
                 data_file_list.append(os.path.join(path, file))
     random.shuffle(data_file_list)
     return data_file_list
@@ -30,7 +31,9 @@ class GPTDataset(Dataset):
         total_lines = 0
         for file in data_file_list:
             with open(file, 'r') as f:
-                lines = get_filtered_lines(f.readlines())
+                jsonlines = f.readlines()
+                lines = [json.loads(l)['data'] for l in jsonlines]
+                lines = get_filtered_lines(lines)
                 num_lines = len(lines)
                 prefix = total_lines
                 total_lines += num_lines
@@ -46,7 +49,9 @@ class GPTDataset(Dataset):
 
     def set_current_file(self, filename):
         with open(filename, 'r') as f:
-            self.current_file = get_filtered_lines(f.readlines())
+            jsonlines = f.readlines()
+            lines = [json.loads(l)['data'] for l in jsonlines]
+            self.current_file = get_filtered_lines(lines)
         self.current_filename = filename
     
     def __len__(self):
