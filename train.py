@@ -109,8 +109,7 @@ class Trainer(object):
             totaltime = int((time_end - time_start) * 1000)
             maxmem = int(torch.cuda.max_memory_allocated(device=self.args.devices[0]) / 1024 / 1024)
             self.milestone += batch_size
-            info = 'milestone:%d/%d, loss:%f, maxMem:%dMB, time:%dms, lr:%f' % \
-                (self.milestone, self.args.end, loss, maxmem, totaltime, lr)
+            info = 'loss:%f, maxMem:%dMB, time:%dms, lr:%f' % (loss, maxmem, totaltime, lr)
             self.pbar.set_description(info)
             self.pbar.update(batch_size)
             if self.milestone >= self.args.end:

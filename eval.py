@@ -22,7 +22,7 @@ class Inferencer(object):
             ids_o = self.model.generate(ids, 128)
             ids_o = list(ids_o.cpu()[0].numpy())
             ids_inv = self.tokenizer.convert_ids_to_tokens(ids_o)
-            print(ids_inv)
+            print(''.join(ids_inv))
 
 
 def main(args):
