@@ -11,11 +11,13 @@ import tokenization
 import datasets
 from configs import gptconfigs
 
+WEIGHT_DIR_NAME = './weights'
+
 
 def load_model(args, model):
     def get_milestone(fname):
         return int(fname.split('_')[1].replace('.pkl', ''))
-    for path, dir_list, file_list in os.walk('weights'):
+    for path, dir_list, file_list in os.walk(WEIGHT_DIR_NAME):
         files = []
         for file in file_list:
             if file.endswith('.pkl') and file.startswith(args.model):
@@ -89,10 +91,21 @@ class Trainer(object):
         self.tensorboard.close()
 
     def get_weight_filename(self):
-        dirname = './weights'
-        if not os.path.exists(dirname):
-            os.makedirs(dirname)
-        return os.path.join(dirname, self.model_name + '_' + str(self.milestone).zfill(10) + '.pkl')
+        return os.path.join(WEIGHT_DIR_NAME, self.model_name + '_' + str(self.milestone).zfill(10) + '.pkl')
+
+    def save_weight(self, state_dict):
+        if not os.path.exists(WEIGHT_DIR_NAME):
+            os.makedirs(WEIGHT_DIR_NAME)
+        for path, dir_list, file_list in os.walk(WEIGHT_DIR_NAME):
+            files = []
+            for file in file_list:
+                if file.endswith('.pkl') and file.startswith(self.model_name):
+                    files.append(os.path.join(path, file))
+        files = sorted(files)
+        del_files = files[:len(files) - self.args.num_save_files + 1]
+        for file in del_files:
+            os.remove(file)
+        torch.save(state_dict, self.get_weight_filename())
 
     def step_epoch(self, save_last=False):
         if self.milestone >= self.args.end:
@@ -121,11 +134,11 @@ class Trainer(object):
             self.tensorboard.add_scalar('loss', loss, self.milestone)
             self.pbar.update(batch_size)
             if self.milestone >= self.args.end:
-                torch.save(self.model.module.state_dict(), self.get_weight_filename())
+                self.save_weight(self.model.module.state_dict())
                 self.pbar.close()
                 return True
             elif self.count_for_save >= self.args.save_interval:
-                torch.save(self.model.module.state_dict(), self.get_weight_filename())
+                self.save_weight(self.model.module.state_dict())
                 self.count_for_save = 0
         return False
 
@@ -157,6 +170,7 @@ if __name__ == '__main__':
     parser.add_argument('--begin', type=int, default=0)
     parser.add_argument('--end', type=int, default=14000)
     parser.add_argument('--save_interval', type=int, default=1000)
+    parser.add_argument('--num_save_files', type=int, default=10)
     args = parser.parse_args()
     assert args.begin % args.save_interval == 0
     assert args.end % args.save_interval == 0
