@@ -17,7 +17,10 @@ pip install -r requirements.txt
 export WIKI_ROOT=/data/wiki/ # Change to your own path
 rm -rf ${WIKI_ROOT}
 python ./data/wiki/wiki_downloader.py --language=en --save_path=${WIKI_ROOT}
-python ./data/wiki/WikiExtractor.py ${WIKI_ROOT}enwiki-20230101-pages-articles.xml -o ${WIKI_ROOT}text
+# Or download from: https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-pages-articles.xml.bz2
+# bzip2 -dk ${WIKI_ROOT}enwiki*
+WIKI_FILE=$(find /data/wiki/ -type f -iname enwiki*.xml)
+python ./data/wiki/WikiExtractor.py ${WIKI_FILE} -o ${WIKI_ROOT}text
 cd data/wiki/wikicleaner/
 bash run.sh "${WIKI_ROOT}text/*/wiki_??" ${WIKI_ROOT}results
 ```
