@@ -140,3 +140,4 @@ wikicleaner/wiki_results
 weights/
 summary/
 test.*
+out_*
