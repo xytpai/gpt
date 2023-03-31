@@ -10,14 +10,15 @@ def main(args):
         txt = f.read()
     datas = []
     target_length = args.len
-    while len(txt) > 0:
-        txt0 = txt[:target_length]
-        txt1 = txt[target_length//2:target_length//2+target_length]
+    used_len = 0
+    while used_len < len(txt):
+        txt0 = txt[used_len:used_len+target_length]
+        txt1 = txt[used_len+(target_length//2):used_len+(target_length//2+target_length)]
         if len(txt0) >= 10:
             datas.append(txt0)
         if len(txt1) >= 10:
             datas.append(txt1)
-        txt = txt[target_length:]
+        used_len += target_length
     outfile = args.input.replace('.txt', '.jsonl').replace('.data', '.jsonl')
     with open(outfile, 'w', encoding='utf-8') as f:
         for data in datas:
