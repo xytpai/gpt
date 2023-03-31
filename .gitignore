@@ -141,3 +141,4 @@ weights/
 summary/
 test.*
 out_*
+test_*

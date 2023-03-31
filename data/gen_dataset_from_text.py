@@ -5,6 +5,7 @@ import json
 
 def main(args):
     assert args.input.endswith('.txt') or args.input.endswith('.data')
+    print('Processing ' + args.input)
     with open(args.input, 'r', encoding='utf-8') as f:
         txt = f.read()
     datas = []

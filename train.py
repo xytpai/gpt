@@ -6,12 +6,20 @@ from tqdm import tqdm
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
+# ddp
+import torch.multiprocessing as mp
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group, all_reduce, ReduceOp
+
 import modeling
 import tokenization
 import datasets
 from configs import gptconfigs
 
 WEIGHT_DIR_NAME = './weights'
+os.environ['MASTER_ADDR'] = 'localhost'
+os.environ['MASTER_PORT'] = '12355'
 
 
 def load_model(args, model):
@@ -28,12 +36,15 @@ def load_model(args, model):
 
 
 def prepare_device(args):
-    torch.cuda.set_device(args.devices[0])
-    seed = args.seed
+    print('launch rank:' + str(args.rank))
+    rank = args.rank
+    torch.cuda.set_device(rank)
+    seed = args.seed + rank
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    init_process_group(backend='nccl', rank=rank, world_size=args.world_size)
 
 
 def prepare_model(args):
@@ -50,8 +61,8 @@ def prepare_model(args):
     model = modeling.GPT(config)
     if args.load:
         load_model(args, model)
-    model = torch.nn.DataParallel(model, device_ids=args.devices)
-    model = model.cuda(args.devices[0])
+    model = model.cuda(args.rank)
+    model = DDP(model, device_ids=[args.rank])
     model.train()
     return model
 
@@ -63,7 +74,7 @@ def prepare_dataset(args):
 
 def prepare_loader(args, dataset):
     loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, 
-        shuffle=True, num_workers=args.num_workers, collate_fn=dataset.collate_fn)
+        shuffle=False, collate_fn=dataset.collate_fn, sampler=DistributedSampler(dataset))
     return loader
 
 
@@ -77,23 +88,41 @@ class Trainer(object):
     def __init__(self, args, model, dataset, loader, opt):
         self.args = args
         self.model_name = args.model
+        self.rank = args.rank
         self.model = model
         self.dataset = dataset
         self.loader = loader
         self.opt = opt
-        self.milestone = args.begin
-        self.pbar = tqdm(total=args.end)
-        self.pbar.update(args.begin)
-        self.tensorboard = SummaryWriter('summary')
-        self.count_for_save = 0
+        self.__create_tools()
     
     def __del__(self):
-        self.tensorboard.close()
+        self.__delete_tools()
 
-    def get_weight_filename(self):
-        return os.path.join(WEIGHT_DIR_NAME, self.model_name + '_' + str(self.milestone).zfill(10) + '.pkl')
+    def __create_tools(self):
+        self.milestone = self.args.begin
+        if self.rank == 0:
+            self.pbar = tqdm(total=self.args.end)
+            self.pbar.update(self.args.begin)
+            self.tensorboard = SummaryWriter('summary')
+            self.count_for_save = 0
 
-    def save_weight(self, state_dict):
+    def __delete_tools(self):
+        if self.rank == 0:
+            self.tensorboard.close()
+            self.pbar.close()
+
+    def __step_tools(self, reduced_batch_size, reduced_loss, master_lr):
+        self.milestone += reduced_batch_size
+        if self.rank == 0:
+            self.count_for_save += reduced_batch_size
+            maxmem = int(torch.cuda.max_memory_allocated(device=self.rank) / 1024 / 1024)
+            info = 'loss:%f, maxMem:%dMB, lr:%f' % (reduced_loss, maxmem, master_lr)
+            self.pbar.set_description(info)
+            self.tensorboard.add_scalar('loss', reduced_loss, self.milestone)
+            self.pbar.update(reduced_batch_size)
+
+    def __save_weight(self):
+        state_dict = self.model.module.state_dict()
         if not os.path.exists(WEIGHT_DIR_NAME):
             os.makedirs(WEIGHT_DIR_NAME)
         for path, dir_list, file_list in os.walk(WEIGHT_DIR_NAME):
@@ -105,45 +134,47 @@ class Trainer(object):
         del_files = files[:len(files) - self.args.num_save_files + 1]
         for file in del_files:
             os.remove(file)
-        torch.save(state_dict, self.get_weight_filename())
+        weight_filename = os.path.join(WEIGHT_DIR_NAME, 
+            self.model_name + '_' + str(self.milestone).zfill(10) + '.pkl')
+        torch.save(state_dict, weight_filename)
 
-    def step_epoch(self, save_last=False):
+    def __step_saver(self):
         if self.milestone >= self.args.end:
-            self.pbar.close()
+            if self.rank == 0:
+                self.__save_weight()
+            return True
+        if self.rank == 0:
+            if self.count_for_save >= self.args.save_interval:
+                self.__save_weight()
+                self.count_for_save = 0
+        return False
+
+    def step_epoch(self):
+        if self.milestone >= self.args.end:
             return True
         for i, (x, y) in enumerate(self.loader):
             batch_size = x.shape[0]
             lr = self.args.lr_base
-            torch.cuda.synchronize()
-            time_start = time.time()
             self.opt.zero_grad()
             output, loss = self.model(x, y)
             loss = loss.mean()
             loss.backward()
             if self.args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
-            self.opt.step()
-            torch.cuda.synchronize()
-            time_end = time.time()
-            totaltime = int((time_end - time_start) * 1000)
-            maxmem = int(torch.cuda.max_memory_allocated(device=self.args.devices[0]) / 1024 / 1024)
-            self.milestone += batch_size
-            self.count_for_save += batch_size
-            info = 'loss:%f, maxMem:%dMB, time:%dms, lr:%f' % (loss, maxmem, totaltime, lr)
-            self.pbar.set_description(info)
-            self.tensorboard.add_scalar('loss', loss, self.milestone)
-            self.pbar.update(batch_size)
-            if self.milestone >= self.args.end:
-                self.save_weight(self.model.module.state_dict())
-                self.pbar.close()
+            self.opt.step() # dist.sync
+            bs_t = torch.full((1,), batch_size).cuda(self.rank)
+            loss_t = torch.full((1,), loss.item()).cuda(self.rank)
+            all_reduce(bs_t, op=ReduceOp.SUM)
+            all_reduce(loss_t, op=ReduceOp.SUM)
+            self.__step_tools(int(bs_t.item()), float(loss_t.item()) / self.args.world_size, lr)
+            if self.__step_saver():
                 return True
-            elif self.count_for_save >= self.args.save_interval:
-                self.save_weight(self.model.module.state_dict())
-                self.count_for_save = 0
         return False
 
 
-def main(args):
+def main(rank, args, world_size):
+    args.rank = rank
+    args.world_size =world_size
     prepare_device(args)
     model = prepare_model(args)
     dataset = prepare_dataset(args)
@@ -153,7 +184,9 @@ def main(args):
     while True:
         if trainer.step_epoch():
             break
-    print('Training procedure finished!')
+    destroy_process_group()
+    if args.rank == 0:
+        print('Training procedure finished!')
 
 
 if __name__ == '__main__':
@@ -162,7 +195,6 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=float, default=0)
-    parser.add_argument('--devices', type=str, default="[0]")
     parser.add_argument('--data', type=str, default="./minidata")
     parser.add_argument('--lr_base', type=float, default=1e-3)
     parser.add_argument('--grad_clip', type=float, default=1.0)
@@ -172,8 +204,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_interval', type=int, default=1000)
     parser.add_argument('--num_save_files', type=int, default=10)
     args = parser.parse_args()
-    args.devices = list(eval(args.devices))
-    print("devices:", args.devices)
     new_args = gptconfigs[args.model]
     new_args.update(vars(args))
-    main(new_args)
+    world_size = torch.cuda.device_count()
+    mp.spawn(main, args=(new_args, world_size), nprocs=world_size)
