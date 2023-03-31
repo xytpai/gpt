@@ -139,3 +139,4 @@ wikicleaner/wiki_results
 *.pkl
 weights/
 summary/
+test.*
