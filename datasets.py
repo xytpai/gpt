@@ -16,12 +16,6 @@ def get_data_file_list(filedir):
     return data_file_list
 
 
-def get_filtered_lines(lines):
-    lines = [l.strip() for l in lines]
-    lines = [l for l in lines if len(l) > 1]
-    return lines
-
-
 class GPTDataset(Dataset):
     def __init__(self, args):
         super().__init__()
@@ -31,14 +25,11 @@ class GPTDataset(Dataset):
         total_lines = 0
         for file in data_file_list:
             with open(file, 'r') as f:
-                jsonlines = f.readlines()
-                lines = [json.loads(l)['data'] for l in jsonlines]
-                lines = get_filtered_lines(lines)
-                num_lines = len(lines)
+                print('init ' + file)
+                num_lines = sum(1 for line in f)
                 prefix = total_lines
                 total_lines += num_lines
                 data_info_list.append({'filename':file, 'start':prefix, 'end':total_lines})
-        
         self.total_lines = total_lines
         self.data_info_list = data_info_list
         print('data_info_list:', data_info_list)
@@ -51,9 +42,9 @@ class GPTDataset(Dataset):
         with open(filename, 'r') as f:
             jsonlines = f.readlines()
             lines = [json.loads(l)['data'] for l in jsonlines]
-            self.current_file = get_filtered_lines(lines)
+            self.current_file = lines
         self.current_filename = filename
-    
+
     def __len__(self):
         return self.total_lines
     

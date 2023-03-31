@@ -73,8 +73,8 @@ def prepare_dataset(args):
 
 
 def prepare_loader(args, dataset):
-    loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, 
-        shuffle=False, collate_fn=dataset.collate_fn, sampler=DistributedSampler(dataset))
+    loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, pin_memory=True,
+        shuffle=False, collate_fn=dataset.collate_fn, sampler=DistributedSampler(dataset, shuffle=False))
     return loader
 
 
