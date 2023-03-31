@@ -14,9 +14,12 @@ pip install -r requirements.txt
 #### Get dataset (Wiki)
 
 ```bash
-rm -rf /data/wiki/ # Change to your own path
-python ./data/wiki_downloader.py --language=en --save_path=/data/wiki/
-python ./data/WikiExtractor.py /data/wiki/enwiki-20230101-pages-articles.xml -o /data/wiki/text
+export WIKI_ROOT=/data/wiki/ # Change to your own path
+rm -rf ${WIKI_ROOT}
+python ./data/wiki/wiki_downloader.py --language=en --save_path=${WIKI_ROOT}
+python ./data/wiki/WikiExtractor.py ${WIKI_ROOT}enwiki-20230101-pages-articles.xml -o ${WIKI_ROOT}text
+cd data/wiki/wikicleaner/
+bash run.sh "${WIKI_ROOT}text/*/wiki_??" ${WIKI_ROOT}results
 ```
 
 #### Training
