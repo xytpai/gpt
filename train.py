@@ -201,7 +201,7 @@ if __name__ == '__main__':
     parser.add_argument('--load', action='store_false')
     parser.add_argument('--begin', type=int, default=0)
     parser.add_argument('--end', type=int, default=14000)
-    parser.add_argument('--save_interval', type=int, default=1000)
+    parser.add_argument('--save_interval', type=int, default=4000)
     parser.add_argument('--num_save_files', type=int, default=10)
     args = parser.parse_args()
     new_args = gptconfigs[args.model]
