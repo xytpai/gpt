@@ -14,11 +14,15 @@ pip install -r requirements.txt
 #### Training
 
 ```bash
-python train.py --end=40000
+python train.py       \
+    --model=nano      \
+    --batch_size=8    \
+    --data=./minidata \
+    --end=40000
 ```
 
 #### Predicting
 
 ```bash
-python eval.py --text=Hello
+python eval.py --model=nano --text=Hello
 ```

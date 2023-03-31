@@ -162,7 +162,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=float, default=0)
-    parser.add_argument('--devices', type=list, default=[0])
+    parser.add_argument('--devices', type=str, default="[0]")
     parser.add_argument('--data', type=str, default="./minidata")
     parser.add_argument('--lr_base', type=float, default=1e-3)
     parser.add_argument('--grad_clip', type=float, default=1.0)
@@ -172,8 +172,8 @@ if __name__ == '__main__':
     parser.add_argument('--save_interval', type=int, default=1000)
     parser.add_argument('--num_save_files', type=int, default=10)
     args = parser.parse_args()
-    assert args.begin % args.save_interval == 0
-    assert args.end % args.save_interval == 0
+    args.devices = list(eval(args.devices))
+    print("devices:", args.devices)
     new_args = gptconfigs[args.model]
     new_args.update(vars(args))
     main(new_args)
