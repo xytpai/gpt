@@ -83,7 +83,7 @@ def prepare_loader(args, dataset):
 
 def prepare_optimizer(args, model):
     lr_base = args.lr_base
-    opt = torch.optim.AdamW(model.parameters(), lr=lr_base, weight_decay=args.weight_decay)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr_base, weight_decay=args.weight_decay, betas=(0.9, 0.95))
     return opt
 
 
