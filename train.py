@@ -93,8 +93,9 @@ def prepare_lr_scheduler(args, opt):
         if step < warmup_steps:
             return float(max(1.0, step) / warmup_steps)
         else:
-            return max(0.0, float(training_steps - step) \
-                / float(max(1.0, training_steps - warmup_steps)))
+            # return max(0.0, float(training_steps - step) \
+            #     / float(max(1.0, training_steps - warmup_steps)))
+            return 1.0
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
     if args.get('ckpt', None) is not None:
         lr_scheduler.load_state_dict(args.ckpt['lr_scheduler'])
@@ -197,7 +198,7 @@ class Trainer(object):
 
 def main(rank, args, world_size):
     args.rank = rank
-    args.world_size =world_size
+    args.world_size = world_size
     prepare_device(args)
     model = prepare_model(args)
     dataset = prepare_dataset(args)
