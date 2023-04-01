@@ -83,7 +83,30 @@ def prepare_loader(args, dataset):
 
 def prepare_optimizer(args, model):
     lr_base = args.lr_base
-    opt = torch.optim.AdamW(model.parameters(), lr=lr_base, weight_decay=args.weight_decay, betas=(0.9, 0.95))
+    decay = set()
+    no_decay = set()
+    whitelist_weight_modules = (torch.nn.Linear, )
+    blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
+    for mn, m in model.named_modules():
+        for pn, p in m.named_parameters():
+            full_param_name = '%s.%s' % (mn, pn) if mn else pn
+            if pn.endswith('bias'):
+                no_decay.add(full_param_name)
+            elif pn.endswith('weight') and isinstance(m, whitelist_weight_modules):
+                decay.add(full_param_name)
+            elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
+                no_decay.add(full_param_name)
+    decay.remove('module.lm_head.weight')
+    param_dict = {pn: p for pn, p in model.named_parameters()}
+    inter_params = decay & no_decay
+    union_params = decay | no_decay
+    assert len(inter_params) == 0
+    assert len(param_dict.keys() - union_params) == 0
+    optim_groups = [
+        {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": args.weight_decay},
+        {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
+    ]
+    opt = torch.optim.AdamW(optim_groups, lr=lr_base, betas=(0.9, 0.95))
     return opt
 
 
@@ -229,7 +252,7 @@ if __name__ == '__main__':
     parser.add_argument('--data', type=str, default="./minidata")
     parser.add_argument('--lr_base', type=float, default=6e-4)
     parser.add_argument('--lr_min', type=float, default=6e-5)
-    parser.add_argument('--weight_decay', type=float, default=5e-3)
+    parser.add_argument('--weight_decay', type=float, default=5e-2)
     parser.add_argument('--grad_clip', type=float, default=1.0)
     parser.add_argument('--no_load', action='store_true')
     parser.add_argument('--begin', type=int, default=0)
