@@ -3,7 +3,6 @@ import random
 import json
 import torch
 import tokenization
-import subprocess
 from torch.utils.data import Dataset, DataLoader
 
 
@@ -25,12 +24,12 @@ class GPTDataset(Dataset):
         data_info_list = []
         total_lines = 0
         for file in data_file_list:
-            print('init ' + file)
-            out = subprocess.getoutput("wc -l %s" % file)
-            num_lines = int(out.split()[0])
-            prefix = total_lines
-            total_lines += num_lines
-            data_info_list.append({'filename':file, 'start':prefix, 'end':total_lines})
+            with open(file, 'r') as f:
+                print('init ' + file)
+                num_lines = sum(1 for line in f)
+                prefix = total_lines
+                total_lines += num_lines
+                data_info_list.append({'filename':file, 'start':prefix, 'end':total_lines})
         self.total_lines = total_lines
         self.data_info_list = data_info_list
         print('data_info_list:', data_info_list)
