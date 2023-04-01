@@ -87,12 +87,12 @@ def prepare_optimizer(args, model):
 
 
 def prepare_lr_scheduler(args, opt):
-    warmup_steps = 5000
+    training_steps = float(args.end / args.batch_size)
+    warmup_steps = 1 + training_steps * 0.002
     def lr_lambda(step):
         if step < warmup_steps:
             return float(max(1.0, step) / warmup_steps)
         else:
-            training_steps = float(args.end / args.batch_size)
             return max(0.0, float(training_steps - step) \
                 / float(max(1.0, training_steps - warmup_steps)))
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
@@ -137,8 +137,8 @@ class Trainer(object):
             maxmem = int(torch.cuda.max_memory_allocated(device=self.rank) / 1024 / 1024)
             info = 'loss:%f, maxMem:%dMB, lr:%f' % (reduced_loss, maxmem, cur_lr)
             self.pbar.set_description(info)
-            self.tensorboard.add_scalar('loss', reduced_loss, self.milestone)
-            self.tensorboard.add_scalar('lr', cur_lr, self.milestone)
+            self.tensorboard.add_scalar('train/loss', reduced_loss, self.milestone)
+            self.tensorboard.add_scalar('train/lr', cur_lr, self.milestone)
             self.pbar.update(reduced_batch_size)
 
     def __save_weight(self):
