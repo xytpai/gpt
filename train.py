@@ -82,7 +82,7 @@ def prepare_loader(args, dataset):
 
 def prepare_optimizer(args, model):
     lr_base = args.lr_base
-    opt = torch.optim.Adam(model.parameters(), lr=lr_base)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr_base, weight_decay=args.weight_decay)
     return opt
 
 
@@ -221,6 +221,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=float, default=0)
     parser.add_argument('--data', type=str, default="./minidata")
     parser.add_argument('--lr_base', type=float, default=1e-3)
+    parser.add_argument('--weight_decay', type=float, default=5e-3)
     parser.add_argument('--grad_clip', type=float, default=1.0)
     parser.add_argument('--no_load', action='store_true')
     parser.add_argument('--begin', type=int, default=0)
