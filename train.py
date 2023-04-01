@@ -130,8 +130,8 @@ class Trainer(object):
             for file in file_list:
                 if file.endswith('.ckpt') and file.startswith(self.model_name):
                     files.append(os.path.join(path, file))
-        files = sorted(files)
-        keep_files = files[:self.args.num_save_files]
+        files_rev = sorted(files, reverse=True)
+        keep_files = files_rev[:self.args.num_save_files - 1]
         for file in files:
             if file not in keep_files:
                 os.remove(file)
