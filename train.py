@@ -1,6 +1,7 @@
 import os
 import random
 import time
+import math
 import argparse
 from tqdm import tqdm
 import torch
@@ -89,13 +90,18 @@ def prepare_optimizer(args, model):
 def prepare_lr_scheduler(args, opt):
     training_steps = float(args.end / args.batch_size)
     warmup_steps = 1 + training_steps * 0.002
+    lr_decay_steps = training_steps
+    lr_min = float(args.lr_min)
+    lr_base = float(args.lr_base)
     def lr_lambda(step):
         if step < warmup_steps:
             return float(max(1.0, step) / warmup_steps)
+        elif step > lr_decay_steps:
+            return lr_min / lr_base
         else:
-            # return max(0.0, float(training_steps - step) \
-            #     / float(max(1.0, training_steps - warmup_steps)))
-            return 1.0
+            decay_ratio = (step - warmup_steps) / (lr_decay_steps - warmup_steps)
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+            return (lr_min + coeff * (lr_base - lr_min)) / lr_base
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
     if args.get('ckpt', None) is not None:
         lr_scheduler.load_state_dict(args.ckpt['lr_scheduler'])
@@ -221,7 +227,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=float, default=0)
     parser.add_argument('--data', type=str, default="./minidata")
-    parser.add_argument('--lr_base', type=float, default=1e-3)
+    parser.add_argument('--lr_base', type=float, default=6e-4)
+    parser.add_argument('--lr_min', type=float, default=6e-5)
     parser.add_argument('--weight_decay', type=float, default=5e-3)
     parser.add_argument('--grad_clip', type=float, default=1.0)
     parser.add_argument('--no_load', action='store_true')

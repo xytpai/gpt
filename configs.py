@@ -2,7 +2,7 @@ from addict import Dict
 
 
 gptconfig_nano = Dict()
-gptconfig_nano.hidden_size = 256
+gptconfig_nano.hidden_size = 512
 gptconfig_nano.num_attention_heads = 16
 gptconfig_nano.vocab_size = 119547
 gptconfig_nano.dropout_prob = 0.1
