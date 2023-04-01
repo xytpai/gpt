@@ -9,21 +9,19 @@ from train import load_model
 
 class Inferencer(object):
     def __init__(self, args, model):
-        self.tokenizer = tokenization.FullTokenizer('vocab.txt')
+        self.tokenizer = tokenization.Tokenizer()
         self.args = args
         self.model = model
         self.model.eval()
 
     def pred(self, text):
-        tokens = self.tokenizer.tokenize(text)
-        ids = self.tokenizer.convert_tokens_to_ids(tokens)
+        ids = self.tokenizer.text_to_ids(text)
         ids = torch.LongTensor(ids).view(1, -1).cuda()
         with torch.no_grad():
             ids_o = self.model.generate(ids, self.args.max_position_embeddings * 2)
             ids_o = list(ids_o.cpu()[0].numpy())
-            ids_inv = self.tokenizer.convert_ids_to_tokens(ids_o)
-            ids_inv = [x for x in ids_inv if x != '[UNK]']
-            print(''.join(ids_inv))
+            ids_inv = self.tokenizer.ids_to_text(ids_o)
+            print(ids_inv)
 
 
 def main(args):

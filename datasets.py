@@ -19,7 +19,7 @@ def get_data_file_list(filedir):
 class GPTDataset(Dataset):
     def __init__(self, args):
         super().__init__()
-        self.tokenizer = tokenization.FullTokenizer('vocab.txt')
+        self.tokenizer = tokenization.Tokenizer()
         data_file_list = get_data_file_list(args.data)
         data_info_list = []
         total_lines = 0
@@ -59,8 +59,7 @@ class GPTDataset(Dataset):
         
         line = self.current_file[index - self.data_info_list[idx]['start']]
 
-        tokens = self.tokenizer.tokenize(line)
-        ids = self.tokenizer.convert_tokens_to_ids(tokens)
+        ids = self.tokenizer.text_to_ids(line)
         ids = ids[:self.max_position_embeddings]
         return torch.LongTensor(ids), torch.LongTensor(ids[1:])
 

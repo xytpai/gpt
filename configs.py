@@ -8,7 +8,7 @@ gptconfig_nano.vocab_size = 119547
 gptconfig_nano.dropout_prob = 0.1
 gptconfig_nano.max_position_embeddings = 128
 gptconfig_nano.num_layers = 12
-gptconfig_nano.ignore_index = 0
+gptconfig_nano.ignore_index = 3
 
 
 gptconfig_base = Dict()
@@ -18,7 +18,7 @@ gptconfig_base.vocab_size = 119547
 gptconfig_base.dropout_prob = 0.1
 gptconfig_base.max_position_embeddings = 256
 gptconfig_base.num_layers = 24
-gptconfig_base.ignore_index = 0
+gptconfig_base.ignore_index = 3
 
 
 gptconfigs = {

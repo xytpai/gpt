@@ -162,11 +162,12 @@ class Trainer(object):
             if self.args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
             self.opt.step() # dist.sync
-            bs_t = torch.full((1,), batch_size).cuda(self.rank)
-            loss_t = torch.full((1,), loss.item()).cuda(self.rank)
-            all_reduce(bs_t, op=ReduceOp.SUM)
-            all_reduce(loss_t, op=ReduceOp.SUM)
-            self.__step_tools(int(bs_t.item()), float(loss_t.item()) / self.args.world_size, lr)
+            bs_loss_t = torch.empty(2).double()
+            bs_loss_t[0] = batch_size
+            bs_loss_t[1] = loss.item()
+            bs_loss_t = bs_loss_t.cuda(self.rank)
+            all_reduce(bs_loss_t, op=ReduceOp.SUM)
+            self.__step_tools(int(bs_loss_t[0].item()), float(bs_loss_t[1].item()) / self.args.world_size, lr)
             if self.__step_saver():
                 return True
         return False

@@ -11,14 +11,23 @@ Please make sure that you have installed a CUDA environment with pytorch >=1.12.
 pip install -r requirements.txt
 ```
 
-#### Training Demo
+#### Training
 
 ```bash
-python train.py       \
-    --model=nano      \
-    --batch_size=8    \
-    --data=./minidata \
+# Change to your dataset dir (containing .txt and .jsonl)
+# export DATA_DIR=/data/wiki/results/
+export DATA_DIR=./minidata/
+
+# train tokenizer first
+python tokenization.py --dir=${DATA_DIR}
+
+# base training cmd
+python train.py            \
+    --model=nano           \
+    --batch_size=8         \
+    --data=${DATA_DIR}     \
     --end=40000
+
 # if you want to use tensorboard
 tensorboard --logdir=summary
 ```
@@ -26,7 +35,7 @@ tensorboard --logdir=summary
 #### Predicting Demo
 
 ```bash
-python eval.py --model=nano --text=Hello
+python eval.py --model=nano --text="你好啊"
 ```
 
 #### Get dataset (Wiki)

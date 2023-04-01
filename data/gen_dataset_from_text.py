@@ -1,4 +1,5 @@
 import os
+import random
 import argparse
 import json
 
@@ -19,10 +20,12 @@ def main(args):
         if len(txt1) >= 10:
             datas.append(txt1)
         used_len += target_length
+    random.shuffle(datas)
     outfile = args.input.replace('.txt', '.jsonl').replace('.data', '.jsonl')
     with open(outfile, 'w', encoding='utf-8') as f:
         for data in datas:
             f.write(json.dumps({'data': data, 'length': len(data)}))
+            # f.write(data)
             f.write('\n')
     with open(outfile, 'r',  encoding='utf-8') as f:
         lines = f.readlines()
