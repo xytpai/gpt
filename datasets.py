@@ -32,7 +32,7 @@ class GPTDataset(Dataset):
                 data_info_list.append({'filename':file, 'start':prefix, 'end':total_lines})
         self.total_lines = total_lines
         self.data_info_list = data_info_list
-        print('data_info_list:', data_info_list)
+        # print('data_info_list:', data_info_list)
 
         self.set_current_file(self.data_info_list[0]['filename'])
         self.max_position_embeddings = args.max_position_embeddings

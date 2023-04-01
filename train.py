@@ -17,18 +17,18 @@ import tokenization
 import datasets
 from configs import gptconfigs
 
-WEIGHT_DIR_NAME = './weights'
+WEIGHT_DIR_NAME = './checkpoints'
 os.environ['MASTER_ADDR'] = 'localhost'
 os.environ['MASTER_PORT'] = '12355'
 
 
 def load_model(args, model):
     def get_milestone(fname):
-        return int(fname.split('_')[1].replace('.pkl', ''))
+        return int(fname.split('_')[1].replace('.ckpt', ''))
     for path, dir_list, file_list in os.walk(WEIGHT_DIR_NAME):
         files = []
         for file in file_list:
-            if file.endswith('.pkl') and file.startswith(args.model):
+            if file.endswith('.ckpt') and file.startswith(args.model):
                 files.append(file)
             files = sorted(files, key=lambda x : get_milestone(x), reverse=True)
             args.begin = get_milestone(files[0])
@@ -59,7 +59,7 @@ def prepare_model(args):
     )
     print('config:', config)
     model = modeling.GPT(config)
-    if args.load:
+    if not args.no_load:
         load_model(args, model)
     model = model.cuda(args.rank)
     model = DDP(model, device_ids=[args.rank])
@@ -128,14 +128,14 @@ class Trainer(object):
         for path, dir_list, file_list in os.walk(WEIGHT_DIR_NAME):
             files = []
             for file in file_list:
-                if file.endswith('.pkl') and file.startswith(self.model_name):
+                if file.endswith('.ckpt') and file.startswith(self.model_name):
                     files.append(os.path.join(path, file))
         files = sorted(files)
         del_files = files[:len(files) - self.args.num_save_files + 1]
         for file in del_files:
             os.remove(file)
         weight_filename = os.path.join(WEIGHT_DIR_NAME, 
-            self.model_name + '_' + str(self.milestone).zfill(10) + '.pkl')
+            self.model_name + '_' + str(self.milestone).zfill(10) + '.ckpt')
         torch.save(state_dict, weight_filename)
 
     def __step_saver(self):
@@ -199,7 +199,7 @@ if __name__ == '__main__':
     parser.add_argument('--data', type=str, default="./minidata")
     parser.add_argument('--lr_base', type=float, default=1e-3)
     parser.add_argument('--grad_clip', type=float, default=1.0)
-    parser.add_argument('--load', action='store_false')
+    parser.add_argument('--no_load', action='store_true')
     parser.add_argument('--begin', type=int, default=0)
     parser.add_argument('--end', type=int, default=14000)
     parser.add_argument('--save_interval', type=int, default=4000)
