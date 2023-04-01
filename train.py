@@ -32,7 +32,9 @@ def load_model(args, model):
                 files.append(file)
             files = sorted(files, key=lambda x : get_milestone(x), reverse=True)
             args.begin = get_milestone(files[0])
-            model.load_state_dict(torch.load(os.path.join(path, files[0]), map_location='cpu'))
+            ckpt = torch.load(os.path.join(path, files[0]), map_location='cpu')
+            model.load_state_dict(ckpt['model'])
+            args.ckpt = ckpt
 
 
 def prepare_device(args):
@@ -84,8 +86,23 @@ def prepare_optimizer(args, model):
     return opt
 
 
+def prepare_lr_scheduler(args, opt):
+    warmup_steps = 5000
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return float(max(1.0, step) / warmup_steps)
+        else:
+            training_steps = float(args.end / args.batch_size)
+            return max(0.0, float(training_steps - step) \
+                / float(max(1.0, training_steps - warmup_steps)))
+    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
+    if args.get('ckpt', None) is not None:
+        lr_scheduler.load_state_dict(args.ckpt['lr_scheduler'])
+    return lr_scheduler
+
+
 class Trainer(object):
-    def __init__(self, args, model, dataset, loader, opt):
+    def __init__(self, args, model, dataset, loader, opt, lr_scheduler):
         self.args = args
         self.model_name = args.model
         self.rank = args.rank
@@ -93,6 +110,7 @@ class Trainer(object):
         self.dataset = dataset
         self.loader = loader
         self.opt = opt
+        self.lr_scheduler = lr_scheduler
         self.__create_tools()
     
     def __del__(self):
@@ -111,18 +129,19 @@ class Trainer(object):
             self.tensorboard.close()
             self.pbar.close()
 
-    def __step_tools(self, reduced_batch_size, reduced_loss, master_lr):
+    def __step_tools(self, reduced_batch_size, reduced_loss):
         self.milestone += reduced_batch_size
         if self.rank == 0:
+            cur_lr = float(self.lr_scheduler.get_last_lr()[0])
             self.count_for_save += reduced_batch_size
             maxmem = int(torch.cuda.max_memory_allocated(device=self.rank) / 1024 / 1024)
-            info = 'loss:%f, maxMem:%dMB, lr:%f' % (reduced_loss, maxmem, master_lr)
+            info = 'loss:%f, maxMem:%dMB, lr:%f' % (reduced_loss, maxmem, cur_lr)
             self.pbar.set_description(info)
             self.tensorboard.add_scalar('loss', reduced_loss, self.milestone)
+            self.tensorboard.add_scalar('lr', cur_lr, self.milestone)
             self.pbar.update(reduced_batch_size)
 
     def __save_weight(self):
-        state_dict = self.model.module.state_dict()
         if not os.path.exists(WEIGHT_DIR_NAME):
             os.makedirs(WEIGHT_DIR_NAME)
         for path, dir_list, file_list in os.walk(WEIGHT_DIR_NAME):
@@ -137,7 +156,9 @@ class Trainer(object):
                 os.remove(file)
         weight_filename = os.path.join(WEIGHT_DIR_NAME, 
             self.model_name + '_' + str(self.milestone).zfill(10) + '.ckpt')
-        torch.save(state_dict, weight_filename)
+        model_sdict = self.model.module.state_dict()
+        lr_scheduler_sdict = self.lr_scheduler.state_dict()
+        torch.save({'model': model_sdict, 'lr_scheduler': lr_scheduler_sdict}, weight_filename)
 
     def __step_saver(self):
         if self.milestone >= self.args.end:
@@ -155,7 +176,6 @@ class Trainer(object):
             return True
         for i, (x, y) in enumerate(self.loader):
             batch_size = x.shape[0]
-            lr = self.args.lr_base
             self.opt.zero_grad()
             output, loss = self.model(x, y)
             loss = loss.mean()
@@ -163,12 +183,13 @@ class Trainer(object):
             if self.args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
             self.opt.step() # dist.sync
+            self.lr_scheduler.step()
             bs_loss_t = torch.empty(2).double()
             bs_loss_t[0] = batch_size
             bs_loss_t[1] = loss.item()
             bs_loss_t = bs_loss_t.cuda(self.rank)
             all_reduce(bs_loss_t, op=ReduceOp.SUM)
-            self.__step_tools(int(bs_loss_t[0].item()), float(bs_loss_t[1].item()) / self.args.world_size, lr)
+            self.__step_tools(int(bs_loss_t[0].item()), float(bs_loss_t[1].item()) / self.args.world_size)
             if self.__step_saver():
                 return True
         return False
@@ -182,7 +203,8 @@ def main(rank, args, world_size):
     dataset = prepare_dataset(args)
     loader =prepare_loader(args, dataset)
     opt = prepare_optimizer(args, model)
-    trainer = Trainer(args, model, dataset, loader, opt)
+    lr_scheduler = prepare_lr_scheduler(args, opt)
+    trainer = Trainer(args, model, dataset, loader, opt, lr_scheduler)
     while True:
         if trainer.step_epoch():
             break
