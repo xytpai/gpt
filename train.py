@@ -131,9 +131,10 @@ class Trainer(object):
                 if file.endswith('.ckpt') and file.startswith(self.model_name):
                     files.append(os.path.join(path, file))
         files = sorted(files)
-        del_files = files[:len(files) - self.args.num_save_files + 1]
-        for file in del_files:
-            os.remove(file)
+        keep_files = files[:self.args.num_save_files]
+        for file in files:
+            if file not in keep_files:
+                os.remove(file)
         weight_filename = os.path.join(WEIGHT_DIR_NAME, 
             self.model_name + '_' + str(self.milestone).zfill(10) + '.ckpt')
         torch.save(state_dict, weight_filename)
