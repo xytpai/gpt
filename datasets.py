@@ -69,8 +69,8 @@ class GPTDataset(Dataset):
         max_n = 0
         for b in range(batch_size):
             if xs[b].shape[0] > max_n: max_n = xs[b].shape[0]
-        out_x = torch.full((batch_size, max_n), self.ignore_index)
-        out_y = torch.full((batch_size, max_n), self.ignore_index)
+        out_x = torch.full((batch_size, max_n), 0).long()
+        out_y = torch.full((batch_size, max_n), self.ignore_index).long()
         for b in range(batch_size):
             out_x[b, :xs[b].shape[0]] = xs[b]
             out_y[b, :ys[b].shape[0]] = ys[b]

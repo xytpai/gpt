@@ -13,7 +13,7 @@ class GPTConfig:
     dropout_prob: float = 0.1
     max_position_embeddings: int = 512
     num_layers: int = 12
-    ignore_index: int = 0
+    ignore_index: int = -1
 
 
 class CausalAttentionBlock(nn.Module):

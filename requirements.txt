@@ -3,4 +3,4 @@ addict==2.3.0
 tqdm
 tensorboard
 nltk
-tokenizers
+tiktoken

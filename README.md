@@ -18,9 +18,6 @@ pip install -r requirements.txt
 # export DATA_DIR=/data/wiki/results/
 export DATA_DIR=./minidata/
 
-# train tokenizer first
-python tokenization.py --dir=${DATA_DIR}
-
 # base training cmd
 python train.py            \
     --model=nano           \
