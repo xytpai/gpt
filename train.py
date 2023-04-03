@@ -199,12 +199,12 @@ class Trainer(object):
             return True
         for i, (x, y) in enumerate(self.loader):
             batch_size = x.shape[0]
-            self.opt.zero_grad()
             output, loss = self.model(x, y)
             loss.backward()
             if self.args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
             self.opt.step() # dist.sync
+            self.opt.zero_grad(set_to_none=True)
             self.lr_scheduler.step()
             bs_loss_t = torch.empty(2).double()
             bs_loss_t[0] = batch_size
