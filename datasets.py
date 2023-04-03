@@ -10,7 +10,7 @@ def get_data_file_list(filedir):
     data_file_list = []
     for path, dir_list, file_list in os.walk(filedir):
         for file in file_list:
-            if file.endswith('.json'):
+            if file.endswith('.txtl'):
                 data_file_list.append(os.path.join(path, file))
     random.shuffle(data_file_list)
     return data_file_list
@@ -26,12 +26,13 @@ class GPTDataset(Dataset):
         for file in data_file_list:
             with open(file, 'r') as f:
                 print('init ' + file)
-                num_lines = len(json.load(f))
+                num_lines = sum(1 for line in f)
                 prefix = total_lines
                 total_lines += num_lines
                 data_info_list.append({'filename':file, 'start':prefix, 'end':total_lines})
         self.total_lines = total_lines
         self.data_info_list = data_info_list
+        print('total_lines:', total_lines)
         # print('data_info_list:', data_info_list)
 
         self.set_current_file(self.data_info_list[0]['filename'])
@@ -40,7 +41,7 @@ class GPTDataset(Dataset):
 
     def set_current_file(self, filename):
         with open(filename, 'r') as f:
-            lines = json.load(f)
+            lines = f.readlines()
             random.shuffle(lines)
             self.current_file = lines
         self.current_filename = filename
@@ -58,7 +59,6 @@ class GPTDataset(Dataset):
             self.set_current_file(self.data_info_list[idx]['filename'])
         
         line = self.current_file[index - self.data_info_list[idx]['start']]
-        line = '[SEP]'.join(line)
 
         ids = self.tokenizer.text_to_ids(line)
         ids = ids[:self.max_position_embeddings]

@@ -24,7 +24,7 @@ class Tokenizer(object):
         return self.tokenizer.decode(ids)
 
     def train(self, text_files):
-        trainer = BpeTrainer(special_tokens=["[UNK]", "[CLS]", "[SEP]", "[PAD]", "[MASK]"], vocab_size=13088)
+        trainer = BpeTrainer(special_tokens=["[BOS0]", "[BOS1]", "[BOS2]", "[SEP]", "[EOS]", "[UNK]"], vocab_size=13088)
         self.tokenizer.train(files=text_files, trainer=trainer)
 
     def save(self):
@@ -36,22 +36,24 @@ def main(args):
     files = []
     for path, dir_list, file_list in os.walk(args.dir):
         for file in file_list:
-            if file.endswith('.json'):
+            if file.endswith('.txtl'):
                 files.append(os.path.join(path, file))
     print(files)
     tokenizer.train(files)
     tokenizer.save()
 
     tokenizer2 = Tokenizer()
-    ids = tokenizer2.text_to_ids('你好啊![SEP]')
+    ids = tokenizer2.text_to_ids('[BOS0]你好啊![SEP]')
     print(ids)
     print(tokenizer2.ids_to_text(ids))
-    ids = tokenizer2.text_to_ids('你 好 啊![SEP]')
+    ids = tokenizer2.text_to_ids('[BOS0] 你 好 啊! [EOS]')
     print(ids)
     print(tokenizer2.ids_to_text(ids))
 
 
 if __name__ == '__main__':
+    if os.path.exists(VOCAB_FILE):
+        raise RuntimeError("{} exists".format(VOCAB_FILE))
     parser = argparse.ArgumentParser(description='BPE Tokenizer Training')
     parser.add_argument('--dir', type=str, required=True)
     args = parser.parse_args()

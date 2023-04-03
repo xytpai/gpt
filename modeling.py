@@ -120,7 +120,7 @@ class GPT(nn.Module):
 
     @torch.no_grad()
     def generate(self, tokenizer, input_ids, max_new_tokens, temperature=1.0, top_k=None):
-        sep = tokenizer.text_to_ids('[SEP]')[0]
+        eos = tokenizer.text_to_ids('[EOS]')[0]
         len_input = input_ids.numel()
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at max_position_embeddings
@@ -135,7 +135,7 @@ class GPT(nn.Module):
                 v, _ = torch.topk(output, min(top_k, output.size(-1)))
                 output[output < v[:, [-1]]] = -float('Inf')
             idx_next = torch.multinomial(F.softmax(output, dim=-1), num_samples=1) # b
-            if idx_next.item() == sep:
+            if idx_next.item() == eos:
                 break
             # append sampled index to the running sequence and continue
             input_ids = torch.cat((input_ids, idx_next), dim=1)

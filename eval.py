@@ -16,9 +16,11 @@ class Inferencer(object):
         self.model.eval()
 
     def pred(self, text):
-        id_sep = self.tokenizer.text_to_ids('[SEP]')[0]
-        ids = self.tokenizer.text_to_ids(text)
-        ids.append(id_sep)
+        bos = self.tokenizer.text_to_ids('[BOS0]')[0]
+        eos = self.tokenizer.text_to_ids('[EOS]')[0]
+        ids_ = self.tokenizer.text_to_ids(text)
+        ids = [bos] + ids_ + [eos]
+        ids.append(eos)
         d = self.args.devices[0]
         ids = torch.LongTensor(ids).view(1, -1)
         if isinstance(d, int):
