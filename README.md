@@ -11,30 +11,6 @@ Please make sure that you have installed a CUDA environment with pytorch >=1.12.
 pip install -r requirements.txt
 ```
 
-#### Training
-
-```bash
-# Change to your dataset dir (containing .txt and .jsonl)
-# export DATA_DIR=/data/wiki/results/
-export DATA_DIR=./minidata/
-
-# base training cmd
-python train.py            \
-    --model=nano           \
-    --batch_size=8         \
-    --data=${DATA_DIR}     \
-    --end=40000
-
-# if you want to use tensorboard
-tensorboard --logdir=summary
-```
-
-#### Predicting Demo
-
-```bash
-python eval.py --model=nano --text="你好啊"
-```
-
 #### Get dataset (Wiki)
 
 ```bash
@@ -50,4 +26,28 @@ bash run.sh "${WIKI_ROOT}text/*/wiki_??" ${WIKI_ROOT}results
 cd ../..
 export DATA_TEXT_LEN=128 # Choose what you want
 bash parallel_gen_dataset.sh ${WIKI_ROOT}results
+```
+
+#### Training
+
+```bash
+# Change to your dataset dir (containing .txt and .jsonl)
+export DATA_DIR=/data/wiki/results/
+# export DATA_DIR=./minidata/
+
+# base training cmd
+python train.py            \
+    --model=nano           \
+    --batch_size=8         \
+    --data=${DATA_DIR}     \
+    --end=40000
+
+# if you want to use tensorboard
+tensorboard --logdir=summary
+```
+
+#### Predicting Demo
+
+```bash
+python eval.py --model=nano --text="Hello"
 ```
