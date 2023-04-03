@@ -18,6 +18,13 @@ class GPTConfig:
     flash_attention: bool
 
 
+class GPTGelu(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, x):
+        return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
+
+
 class CausalAttentionBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -37,8 +44,8 @@ class CausalAttentionBlock(nn.Module):
         self.hidden_layernorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
         self.attention_out_layer = nn.Sequential(
                 nn.Linear(config.hidden_size, 2 * config.hidden_size, bias=False), 
-                nn.GELU(),
-                nn.Linear(2 * config.hidden_size, config.hidden_size), 
+                GPTGelu(),
+                nn.Linear(2 * config.hidden_size, config.hidden_size, bias=False), 
                 nn.Dropout(config.dropout_prob))
         self.register_buffer("bias", torch.tril(
             torch.ones(config.max_position_embeddings, config.max_position_embeddings)

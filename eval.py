@@ -24,7 +24,7 @@ class Inferencer(object):
         if isinstance(d, int):
             ids = ids.cuda(d)
         with torch.no_grad():
-            ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings, temperature=0.9)
+            ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings, temperature=1.0)
             ids_o = list(ids_o.cpu()[0].numpy())
             ids_inv = self.tokenizer.ids_to_text(ids_o)
             print(ids_inv.replace(' ', ''))
