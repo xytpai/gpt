@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+from dacite import from_dict
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -7,18 +8,21 @@ from torch.nn import functional as F
 
 @dataclass
 class GPTConfig:
-    hidden_size: int = 256
-    num_attention_heads: int = 16
-    vocab_size: int = 30522
-    dropout_prob: float = 0.1
-    max_position_embeddings: int = 512
-    num_layers: int = 12
-    ignore_index: int = -1
+    hidden_size: int
+    num_attention_heads: int
+    vocab_size: int
+    dropout_prob: float
+    max_position_embeddings: int
+    num_layers: int
+    ignore_index: int
+    flash_attention: bool
 
 
 class CausalAttentionBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.flash = config.flash_attention
+        self.dropout_prob = config.dropout_prob
         if config.hidden_size % config.num_attention_heads != 0:
             raise ValueError(
                 "The hidden size (%d) is not a multiple of the number of attention "
@@ -46,11 +50,14 @@ class CausalAttentionBlock(nn.Module):
         q = q.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
         k = k.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
         v = v.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
-        attention_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.attention_head_size) # -> (b, nh, t, t)
-        attention_scores = attention_scores.masked_fill(self.bias[:,:,:seq_length,:seq_length] == 0, float('-inf'))
-        attention_probs = F.softmax(attention_scores, dim=-1)
-        attention_probs = self.attention_dropout(attention_probs) # -> (b, nh, t, t)
-        output = torch.matmul(attention_probs, v) # -> (b, nh, t, hs)
+        if self.flash:
+            output = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout_prob, is_causal=True)
+        else:
+            attention_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.attention_head_size) # -> (b, nh, t, t)
+            attention_scores = attention_scores.masked_fill(self.bias[:,:,:seq_length,:seq_length] == 0, float('-inf'))
+            attention_probs = F.softmax(attention_scores, dim=-1)
+            attention_probs = self.attention_dropout(attention_probs) # -> (b, nh, t, t)
+            output = torch.matmul(attention_probs, v) # -> (b, nh, t, hs)
         output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, hidden_size)
         output = x + self.hidden_dropout(self.dense(output))
         output = output + self.attention_out_layer(self.hidden_layernorm(output))
@@ -69,7 +76,7 @@ class GPT(nn.Module):
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.word_embeddings.weight = self.lm_head.weight
-        assert id(self.word_embeddings.weight.storage()) == id(self.lm_head.weight.storage())
+        assert id(self.word_embeddings.weight.untyped_storage()) == id(self.lm_head.weight.untyped_storage())
 
         self.apply(self._init_weights)
         for pn, p in self.named_parameters():
@@ -125,8 +132,8 @@ class GPT(nn.Module):
 
 
 if __name__ == '__main__':
-    config = GPTConfig(hidden_size=128)
-    print(config)
+    from configs import gptconfig_nano
+    config = from_dict(data_class=GPTConfig, data=gptconfig_nano)
     model = GPT(config).cuda()
     # print(model)
     fake_input = torch.rand(2, 10) * 100  # batch_size, seq_length

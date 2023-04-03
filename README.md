@@ -3,7 +3,7 @@
 This is the simplest natural language processing model. 
 The entire project includes distributed training (DDP) and inference.
 The training method is to predict the next word.
-Please make sure that you have installed a CUDA environment with pytorch >=1.12. The specific usage instructions are as follows:
+Please make sure that you have installed a CUDA environment with pytorch >=2.0. The specific usage instructions are as follows:
 
 #### Setup
 

@@ -9,6 +9,7 @@ gptconfig_nano.dropout_prob = 0.1
 gptconfig_nano.max_position_embeddings = 512
 gptconfig_nano.num_layers = 12
 gptconfig_nano.ignore_index = -1
+gptconfig_nano.flash_attention = True
 
 
 gptconfig_base = Dict()
@@ -19,6 +20,7 @@ gptconfig_base.dropout_prob = 0.1
 gptconfig_base.max_position_embeddings = 1024
 gptconfig_base.num_layers = 24
 gptconfig_base.ignore_index = -1
+gptconfig_base.flash_attention = True
 
 
 gptconfigs = {

@@ -78,22 +78,11 @@ class GPTDataset(Dataset):
 
 
 if __name__ == '__main__':
-    from dataclasses import dataclass
-    @dataclass
-    class DefaultConfig:
-        hidden_size: int = 256
-        num_attention_heads: int = 16
-        vocab_size: int = 30522
-        dropout_prob: float = 0.1
-        max_position_embeddings: int = 512
-        num_layers: int = 12
-        ignore_index: int = -1
-        data: str = './minidata'
-        batch_size: int = 24
-    
-    args = DefaultConfig()
-    dataset = GPTDataset(args)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=dataset.collate_fn)
+    from configs import gptconfig_nano
+    gptconfig_nano.data = './minidata'
+    gptconfig_nano.batch_size = 2
+    dataset = GPTDataset(gptconfig_nano)
+    loader = DataLoader(dataset, batch_size=gptconfig_nano.batch_size, shuffle=True, num_workers=0, collate_fn=dataset.collate_fn)
     for data in loader:
         x, y = data
         print(x.shape, x.dtype)

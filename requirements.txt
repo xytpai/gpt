@@ -4,3 +4,7 @@ tqdm
 tensorboard
 nltk
 tiktoken
+torch >= 2.0.0
+torchvision
+torchaudio
+dacite

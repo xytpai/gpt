@@ -4,6 +4,7 @@ import time
 import math
 import argparse
 from tqdm import tqdm
+from dacite import from_dict
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
@@ -51,15 +52,7 @@ def prepare_device(args):
 
 
 def prepare_model(args):
-    config = modeling.GPTConfig(
-        hidden_size=args.hidden_size,
-        num_attention_heads=args.num_attention_heads,
-        vocab_size=args.vocab_size,
-        dropout_prob=args.dropout_prob,
-        max_position_embeddings=args.max_position_embeddings,
-        num_layers=args.num_layers,
-        ignore_index=args.ignore_index,
-    )
+    config = from_dict(data_class=modeling.GPTConfig, data=args)
     print('config:', config)
     model = modeling.GPT(config)
     if not args.no_load:

@@ -1,4 +1,5 @@
 import argparse
+from dacite import from_dict
 import torch
 
 import modeling
@@ -18,22 +19,14 @@ class Inferencer(object):
         ids = self.tokenizer.text_to_ids(text)
         ids = torch.LongTensor(ids).view(1, -1).cuda()
         with torch.no_grad():
-            ids_o = self.model.generate(ids, self.args.max_position_embeddings * 2)
+            ids_o = self.model.generate(ids, self.args.max_position_embeddings)
             ids_o = list(ids_o.cpu()[0].numpy())
             ids_inv = self.tokenizer.ids_to_text(ids_o)
             print(ids_inv)
 
 
 def main(args):
-    config = modeling.GPTConfig(
-        hidden_size=args.hidden_size,
-        num_attention_heads=args.num_attention_heads,
-        vocab_size=args.vocab_size,
-        dropout_prob=args.dropout_prob,
-        max_position_embeddings=args.max_position_embeddings,
-        num_layers=args.num_layers,
-        ignore_index=args.ignore_index,
-    )
+    config = from_dict(data_class=modeling.GPTConfig, data=args)
     model = modeling.GPT(config)
     load_model(args, model)
     model = model.cuda(args.devices[0])
