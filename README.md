@@ -24,7 +24,7 @@ python ./data/wiki/WikiExtractor.py ${WIKI_FILE} -o ${WIKI_ROOT}text
 cd data/wiki/wikicleaner/
 bash run.sh "${WIKI_ROOT}text/*/wiki_??" ${WIKI_ROOT}results
 cd ../..
-export DATA_TEXT_LEN=128 # Choose what you want
+export DATA_TEXT_LEN=512 # Choose what you want
 bash parallel_gen_dataset.sh ${WIKI_ROOT}results
 ```
 
@@ -36,11 +36,7 @@ export DATA_DIR=/data/wiki/results/
 # export DATA_DIR=./minidata/
 
 # base training cmd
-python train.py            \
-    --model=nano           \
-    --batch_size=8         \
-    --data=${DATA_DIR}     \
-    --end=40000
+python train.py --model=nano --batch_size=4 --data=${DATA_DIR} --end=10000000
 
 # if you want to use tensorboard
 tensorboard --logdir=summary

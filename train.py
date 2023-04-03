@@ -208,7 +208,6 @@ class Trainer(object):
             batch_size = x.shape[0]
             self.opt.zero_grad()
             output, loss = self.model(x, y)
-            loss = loss.mean()
             loss.backward()
             if self.args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
