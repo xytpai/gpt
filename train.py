@@ -244,7 +244,7 @@ if __name__ == '__main__':
     parser.add_argument('--data', type=str, default="./minidata")
     parser.add_argument('--lr_base', type=float, default=6e-4)
     parser.add_argument('--lr_min', type=float, default=6e-5)
-    parser.add_argument('--weight_decay', type=float, default=5e-2)
+    parser.add_argument('--weight_decay', type=float, default=5e-3)
     parser.add_argument('--grad_clip', type=float, default=1.0)
     parser.add_argument('--no_load', action='store_true')
     parser.add_argument('--begin', type=int, default=0)

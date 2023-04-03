@@ -11,32 +11,17 @@ Please make sure that you have installed a CUDA environment with pytorch >=2.0. 
 pip install -r requirements.txt
 ```
 
-#### Get dataset (Wiki)
-
-```bash
-export WIKI_ROOT=/data/wiki/ # Change to your own path
-rm -rf ${WIKI_ROOT}
-python ./data/wiki/wiki_downloader.py --language=en --save_path=${WIKI_ROOT}
-# Or download from: https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-pages-articles.xml.bz2
-# bzip2 -dk ${WIKI_ROOT}enwiki*
-export WIKI_FILE=$(find /data/wiki/ -type f -iname enwiki*.xml)
-python ./data/wiki/WikiExtractor.py ${WIKI_FILE} -o ${WIKI_ROOT}text
-cd data/wiki/wikicleaner/
-bash run.sh "${WIKI_ROOT}text/*/wiki_??" ${WIKI_ROOT}results
-cd ../..
-export DATA_TEXT_LEN=512 # Choose what you want
-bash parallel_gen_dataset.sh ${WIKI_ROOT}results
-```
-
 #### Training
 
 ```bash
-# Change to your dataset dir (containing .txt and .jsonl)
-export DATA_DIR=/data/wiki/results/
-# export DATA_DIR=./minidata/
+# Change to your dataset dir (containing .json)
+export DATA_DIR=./minidata/
+
+# Get vocab.json
+python tokenization.py --dir=${DATA_DIR}
 
 # base training cmd
-python train.py --model=nano --batch_size=4 --data=${DATA_DIR} --end=10000000
+python train.py --model=nano --batch_size=4 --data=${DATA_DIR} --end=1000000
 
 # if you want to use tensorboard
 tensorboard --logdir=summary

@@ -16,13 +16,15 @@ class Inferencer(object):
         self.model.eval()
 
     def pred(self, text):
+        id_sep = self.tokenizer.text_to_ids('[SEP]')[0]
         ids = self.tokenizer.text_to_ids(text)
+        ids.append(id_sep)
         ids = torch.LongTensor(ids).view(1, -1).cuda()
         with torch.no_grad():
-            ids_o = self.model.generate(ids, self.args.max_position_embeddings)
+            ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings)
             ids_o = list(ids_o.cpu()[0].numpy())
             ids_inv = self.tokenizer.ids_to_text(ids_o)
-            print(ids_inv)
+            print(ids_inv.replace(' ', ''))
 
 
 def main(args):
