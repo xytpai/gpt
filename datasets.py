@@ -41,6 +41,7 @@ class GPTDataset(Dataset):
     def set_current_file(self, filename):
         with open(filename, 'r') as f:
             lines = json.load(f)
+            random.shuffle(lines)
             self.current_file = lines
         self.current_filename = filename
 
