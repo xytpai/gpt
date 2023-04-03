@@ -19,9 +19,12 @@ class Inferencer(object):
         id_sep = self.tokenizer.text_to_ids('[SEP]')[0]
         ids = self.tokenizer.text_to_ids(text)
         ids.append(id_sep)
-        ids = torch.LongTensor(ids).view(1, -1).cuda()
+        d = self.args.devices[0]
+        ids = torch.LongTensor(ids).view(1, -1)
+        if isinstance(d, int):
+            ids = ids.cuda(d)
         with torch.no_grad():
-            ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings)
+            ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings, temperature=0.9)
             ids_o = list(ids_o.cpu()[0].numpy())
             ids_inv = self.tokenizer.ids_to_text(ids_o)
             print(ids_inv.replace(' ', ''))
@@ -31,7 +34,8 @@ def main(args):
     config = from_dict(data_class=modeling.GPTConfig, data=args)
     model = modeling.GPT(config)
     load_model(args, model)
-    model = model.cuda(args.devices[0])
+    if isinstance(args.devices[0], int):
+        model = model.cuda(args.devices[0])
     model.eval()
     infer = Inferencer(args, model)
     infer.pred(args.text)
@@ -41,7 +45,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GPT Evaluating')
     parser.add_argument('--model', type=str, default='nano')
-    parser.add_argument('--devices', type=list, default=[0])
+    parser.add_argument('--devices', type=list, default=['cpu'])
     parser.add_argument('--text', type=str, default='')
     args = parser.parse_args()
     new_args = gptconfigs[args.model]
