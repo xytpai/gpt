@@ -5,6 +5,7 @@ case $para in
         rm -rf ./summary
         rm -rf ./checkpoints
         rm -rf __pycache__
+        rm -rf .datacache
         ;;
     *)
         exit 1

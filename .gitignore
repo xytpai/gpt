@@ -144,3 +144,4 @@ out_*
 test_*
 # vocab.json
 checkpoints/
+.datacache

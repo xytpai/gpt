@@ -23,13 +23,29 @@ class GPTDataset(Dataset):
         data_file_list = get_data_file_list(args.data)
         data_info_list = []
         total_lines = 0
-        for file in data_file_list:
-            with open(file, 'r') as f:
-                print('init ' + file)
-                num_lines = sum(1 for line in f)
+        CACHE_FILE = '.datacache'
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, 'r') as f:
+                cache = json.loads(f.read())
+            for file in data_file_list:
+                print('init ' + file + ' from .datacache')
+                num_lines = cache[file]
                 prefix = total_lines
                 total_lines += num_lines
                 data_info_list.append({'filename':file, 'start':prefix, 'end':total_lines})
+        else:
+            cache = {}
+            for file in data_file_list:
+                with open(file, 'r') as f:
+                    print('init ' + file)
+                    num_lines = sum(1 for line in f)
+                    cache[file] = num_lines
+                    prefix = total_lines
+                    total_lines += num_lines
+                    data_info_list.append({'filename':file, 'start':prefix, 'end':total_lines})
+            cache = json.dumps(cache)
+            with open(CACHE_FILE, 'w') as f:
+                f.write(cache)
         self.total_lines = total_lines
         self.data_info_list = data_info_list
         print('total_lines:', total_lines)
