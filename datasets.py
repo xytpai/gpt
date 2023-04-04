@@ -92,7 +92,7 @@ class GPTDataset(Dataset):
         for b in range(batch_size):
             out_x[b, :xs[b].shape[0]] = xs[b]
             out_y[b, :ys[b].shape[0]] = ys[b]
-            index = torch.argmax(torch.eq(ys[b], self.eos).long()) + 1
+            index = torch.argmax(torch.eq(ys[b], self.eos).long()) + 2
             out_y[b, :index] = self.ignore_index
         return out_x, out_y
 
