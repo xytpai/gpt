@@ -4,7 +4,7 @@ from addict import Dict
 gptconfig_nano = Dict()
 gptconfig_nano.hidden_size = 512
 gptconfig_nano.num_attention_heads = 16
-gptconfig_nano.vocab_size = 13088
+gptconfig_nano.vocab_size = 96000
 gptconfig_nano.dropout_prob = 0.0
 gptconfig_nano.max_position_embeddings = 256
 gptconfig_nano.num_layers = 12
@@ -15,7 +15,7 @@ gptconfig_nano.flash_attention = True
 gptconfig_base = Dict()
 gptconfig_base.hidden_size = 512
 gptconfig_base.num_attention_heads = 16
-gptconfig_base.vocab_size = 13088
+gptconfig_base.vocab_size = 96000
 gptconfig_base.dropout_prob = 0.0
 gptconfig_base.max_position_embeddings = 1024
 gptconfig_base.num_layers = 24
