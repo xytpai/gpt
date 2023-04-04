@@ -20,6 +20,7 @@ class GPTDataset(Dataset):
     def __init__(self, args):
         super().__init__()
         self.tokenizer = tokenization.Tokenizer()
+        self.eos = self.tokenizer.text_to_ids('[EOS]')[0]
         data_file_list = get_data_file_list(args.data)
         data_info_list = []
         total_lines = 0
@@ -91,6 +92,8 @@ class GPTDataset(Dataset):
         for b in range(batch_size):
             out_x[b, :xs[b].shape[0]] = xs[b]
             out_y[b, :ys[b].shape[0]] = ys[b]
+            index = torch.argmax(torch.eq(ys[b], self.eos).long()) + 1
+            out_y[b, :index] = self.ignore_index
         return out_x, out_y
 
 

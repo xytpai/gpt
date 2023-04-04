@@ -22,7 +22,7 @@ class Inferencer(object):
         eos = self.tokenizer.text_to_ids('[EOS]')[0]
         ids_ = self.tokenizer.text_to_ids(text)
         ids = [bos] + ids_ + [eos]
-        ids.append(eos)
+        ids.append(bos)
         d = self.args.devices[0]
         ids = torch.LongTensor(ids).view(1, -1)
         if isinstance(d, int):
