@@ -142,5 +142,5 @@ summary/
 test.*
 out_*
 test_*
-vocab.json
+# vocab.json
 checkpoints/
