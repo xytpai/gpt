@@ -207,7 +207,7 @@ class Trainer(object):
             self.batch_size_count += x.shape[0]
             with autocast():
                 output, loss = self.model(x, y)
-            self.scaler.scale(loss).backward()
+            self.scaler.scale(loss / float(self.args.gradient_accumulation_steps)).backward()
             if self.grad_acc_count < self.args.gradient_accumulation_steps:
                 self.grad_acc_count += 1
                 continue
