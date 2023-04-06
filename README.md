@@ -17,11 +17,11 @@ pip install -r requirements.txt
 # Change to your dataset dir (containing .json)
 export DATA_DIR=./minidata/
 
-# Get vocab.json
-python tokenization.py --dir=${DATA_DIR}
+# If you want to re-generate vocab.json
+# python tokenization.py --dir=${DATA_DIR}
 
 # base training cmd
-python train.py --model=nano --batch_size=16 --data=${DATA_DIR} --end=10000000
+python train.py --model=nano --batch_size=4 --data=${DATA_DIR} --end=10000000
 
 # if you want to use tensorboard
 tensorboard --logdir=summary
