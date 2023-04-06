@@ -7,6 +7,7 @@ from tqdm import tqdm
 from dacite import from_dict
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import autocast, GradScaler
 
 # ddp
 import torch.multiprocessing as mp
@@ -134,6 +135,9 @@ class Trainer(object):
         self.loader = loader
         self.opt = opt
         self.lr_scheduler = lr_scheduler
+        self.scaler = GradScaler()
+        self.grad_acc_count = 0
+        self.batch_size_count = 0
         self.__create_tools()
     
     def __del__(self):
@@ -198,14 +202,29 @@ class Trainer(object):
         if self.milestone >= self.args.end:
             return True
         for i, (x, y) in enumerate(self.loader):
-            batch_size = x.shape[0]
-            output, loss = self.model(x, y)
-            loss.backward()
+
+            # accumulate gradient
+            self.batch_size_count += x.shape[0]
+            with autocast():
+                output, loss = self.model(x, y)
+            self.scaler.scale(loss).backward()
+            if self.grad_acc_count < self.args.gradient_accumulation_steps:
+                self.grad_acc_count += 1
+                continue
+            batch_size = self.batch_size_count
+            self.batch_size_count = 0
+            self.grad_acc_count = 0
+
+            # step optimizer
             if self.args.grad_clip > 0:
+                self.scaler.unscale_(self.opt)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
-            self.opt.step() # dist.sync
+            self.scaler.step(self.opt)
+            self.scaler.update()
             self.opt.zero_grad(set_to_none=True)
             self.lr_scheduler.step()
+
+            # setp utils
             bs_loss_t = torch.empty(2).double()
             bs_loss_t[0] = batch_size
             bs_loss_t[1] = loss.item()
@@ -251,6 +270,7 @@ if __name__ == '__main__':
     parser.add_argument('--end', type=int, default=14000)
     parser.add_argument('--save_interval', type=int, default=4000)
     parser.add_argument('--num_save_files', type=int, default=10)
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=8)
     args = parser.parse_args()
     new_args = gptconfigs[args.model]
     new_args.update(vars(args))

@@ -137,6 +137,7 @@ class GPT(nn.Module):
             idx_next = torch.multinomial(F.softmax(output, dim=-1), num_samples=1) # b
             if idx_next.item() == eos:
                 break
+                # pass
             # append sampled index to the running sequence and continue
             input_ids = torch.cat((input_ids, idx_next), dim=1)
         return input_ids[:, len_input:]

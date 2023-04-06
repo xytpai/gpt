@@ -15,23 +15,22 @@ class Inferencer(object):
         self.args = args
         self.model = model
         self.model.eval()
-        self.pattern = r'\s+([\u4e00-\u9fff]+)\s+'
 
     def pred(self, text):
-        bos = self.tokenizer.text_to_ids('[BOS0]')[0]
+        bos0 = self.tokenizer.text_to_ids('[BOS0]')[0]
         eos = self.tokenizer.text_to_ids('[EOS]')[0]
         ids_ = self.tokenizer.text_to_ids(text)
-        ids = [bos] + ids_ + [eos]
-        ids.append(bos)
+        ids = [bos0] + ids_ + [eos]
         d = self.args.devices[0]
         ids = torch.LongTensor(ids).view(1, -1)
         if isinstance(d, int):
             ids = ids.cuda(d)
         with torch.no_grad():
-            ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings, temperature=0.9)
+            ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings, temperature=0.6)
             ids_o = list(ids_o.cpu()[0].numpy())
             ids_inv = self.tokenizer.ids_to_text(ids_o)
-            text = re.sub(self.pattern, r'\1', ids_inv)
+            text = re.sub(r'\s+([\u4e00-\u9fff]+)\s+', r'\1', ids_inv)
+            # text = ids_inv.replace(' ', '')
             print(text)
 
 

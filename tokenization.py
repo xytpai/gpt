@@ -21,7 +21,9 @@ class Tokenizer(object):
         return self.tokenizer.encode(text).ids
 
     def ids_to_text(self, ids):
-        return self.tokenizer.decode(ids)
+        pred =  self.tokenizer.decode(ids, skip_special_tokens=False)
+        pred = pred.replace('[EOS]', '\n').replace('[SEP]', '\n').replace('[BOS0]', 'User: ').replace('[BOS1]', 'Chatbot: ')
+        return pred
 
     def train(self, text_files):
         trainer = BpeTrainer(special_tokens=["[BOS0]", "[BOS1]", "[BOS2]", "[SEP]", "[EOS]", "[UNK]"], vocab_size=96000)
