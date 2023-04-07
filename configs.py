@@ -13,7 +13,7 @@ gptconfig_nano.flash_attention = True
 
 
 gptconfig_base = Dict()
-gptconfig_base.hidden_size = 512
+gptconfig_base.hidden_size = 1024
 gptconfig_base.num_attention_heads = 16
 gptconfig_base.vocab_size = 96000
 gptconfig_base.dropout_prob = 0.0

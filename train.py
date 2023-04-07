@@ -33,11 +33,13 @@ def load_model(args, model):
         for file in file_list:
             if file.endswith('.ckpt') and file.startswith(args.model):
                 files.append(file)
-            files = sorted(files, key=lambda x : get_milestone(x), reverse=True)
+        files = sorted(files, key=lambda x : get_milestone(x), reverse=True)
+        if len(files) > 0:
             args.begin = get_milestone(files[0])
             ckpt = torch.load(os.path.join(path, files[0]), map_location='cpu')
             model.load_state_dict(ckpt['model'], strict=False)
             args.ckpt = ckpt
+        return
 
 
 def prepare_device(args):
