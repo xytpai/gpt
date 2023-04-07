@@ -47,9 +47,10 @@ class CausalAttentionBlock(nn.Module):
                 GPTGelu(),
                 nn.Linear(2 * config.hidden_size, config.hidden_size, bias=False), 
                 nn.Dropout(config.dropout_prob))
-        self.register_buffer("bias", torch.tril(
-            torch.ones(config.max_position_embeddings, config.max_position_embeddings)
-                ).view(1, 1, config.max_position_embeddings, config.max_position_embeddings))
+        if not self.flash:
+            self.register_buffer("bias", torch.tril(
+                torch.ones(config.max_position_embeddings, config.max_position_embeddings)
+                    ).view(1, 1, config.max_position_embeddings, config.max_position_embeddings))
 
     def forward(self, x):
         batch_size, seq_length, hidden_size = x.size()

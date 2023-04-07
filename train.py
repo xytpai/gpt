@@ -36,7 +36,7 @@ def load_model(args, model):
             files = sorted(files, key=lambda x : get_milestone(x), reverse=True)
             args.begin = get_milestone(files[0])
             ckpt = torch.load(os.path.join(path, files[0]), map_location='cpu')
-            model.load_state_dict(ckpt['model'])
+            model.load_state_dict(ckpt['model'], strict=False)
             args.ckpt = ckpt
 
 
