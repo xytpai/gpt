@@ -65,8 +65,8 @@ class GPTDataset(Dataset):
 
     def __len__(self):
         return self.total_lines
-    
-    def __getitem__(self, index):
+
+    def get_line_ids(self, index):
         idx = 0
         for i, info in enumerate(self.data_info_list):
             if index < info['end']:
@@ -74,11 +74,13 @@ class GPTDataset(Dataset):
                 break
         if self.current_filename != self.data_info_list[idx]['filename']:
             self.set_current_file(self.data_info_list[idx]['filename'])
-        
         line = self.current_file[index - self.data_info_list[idx]['start']]
-
         ids = self.tokenizer.text_to_ids(line)
         ids = ids[:self.max_position_embeddings]
+        return ids
+
+    def __getitem__(self, index):
+        ids = self.get_line_ids(index)
         return torch.LongTensor(ids), torch.LongTensor(ids[1:])
 
     def collate_fn(self, data):
@@ -95,6 +97,30 @@ class GPTDataset(Dataset):
             index = torch.argmax(torch.eq(ys[b], self.eos).long()) + 1
             out_y[b, :index] = self.ignore_index
         return out_x, out_y
+
+
+class RelationGPTDataset(GPTDataset):
+    def __init__(self):
+        super().__init__()
+        self.flag_not_related = self.tokenizer.text_to_ids('[UNK]')[0]
+
+    def __getitem__(self, index):
+        ids = self.get_line_ids(index)
+        if ids[-1] == self.flag_not_related:
+            return torch.LongTensor(ids[:-1]), torch.FloatTensor([0.0])
+        else:
+            return torch.LongTensor(ids), torch.FloatTensor([1.0])
+
+    def collate_fn(self, data):
+        xs, ys = zip(*data)
+        batch_size = len(xs)
+        max_n = 0
+        for b in range(batch_size):
+            if xs[b].shape[0] > max_n: max_n = xs[b].shape[0]
+        out_x = torch.full((batch_size, max_n), 0).long()
+        for b in range(batch_size):
+            out_x[b, :xs[b].shape[0]] = xs[b]
+        return out_x, torch.cat(ys, dim=0)
 
 
 if __name__ == '__main__':

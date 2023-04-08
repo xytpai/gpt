@@ -256,7 +256,7 @@ def main(rank, args, world_size):
         print('Training procedure finished!')
 
 
-if __name__ == '__main__':
+def parse_args():
     parser = argparse.ArgumentParser(description='GPT Training')
     parser.add_argument('--model', type=str, default='nano')
     parser.add_argument('--batch_size', type=int, default=8)
@@ -276,5 +276,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
     new_args = gptconfigs[args.model]
     new_args.update(vars(args))
+    return new_args
+
+
+if __name__ == '__main__':
+    args = parse_args()
     world_size = torch.cuda.device_count()
-    mp.spawn(main, args=(new_args, world_size), nprocs=world_size)
+    mp.spawn(main, args=(args, world_size), nprocs=world_size)
