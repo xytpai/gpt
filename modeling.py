@@ -144,20 +144,73 @@ class GPT(nn.Module):
         return input_ids[:, len_input:]
 
 
+class RelationGPT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
+        self.embeddings_dropout = nn.Dropout(config.dropout_prob)
+        self.blocks = nn.ModuleList([CausalAttentionBlock(config) for _ in range(config.num_layers)])
+        self.layernorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.score_head = nn.Linear(config.hidden_size, 1, bias=False)
+        self.apply(self._init_weights)
+        for pn, p in self.named_parameters():
+            if pn.endswith('attention_out_layer.2.weight') or pn.endswith('dense.weight'):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.num_layers))
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(self, input_ids, targets=None):
+        # targets: LongTensor (batch_size)
+        device = input_ids.device
+        batch_size, seq_length = input_ids.size()
+        assert seq_length <= self.config.max_position_embeddings
+        pos = torch.arange(0, seq_length, dtype=torch.long, device=device).unsqueeze(0) # (1, t)
+        word_embeddings = self.word_embeddings(input_ids) # (b, t, hidden_size)
+        position_embeddings = self.position_embeddings(pos) # (1, t, n_embd)
+        embeddings = self.embeddings_dropout(word_embeddings + position_embeddings)
+        for block in self.blocks:
+            embeddings = block(embeddings)
+        embeddings = self.layernorm(embeddings)
+        output = self.score_head(embeddings[:, [-1], :]).view(batch_size)
+        if targets is not None:
+            loss = F.binary_cross_entropy_with_logits(output, targets)
+        else:
+            output = output.sigmoid()
+            loss = None
+        return output, loss
+
+
 if __name__ == '__main__':
     from configs import gptconfig_nano
     config = from_dict(data_class=GPTConfig, data=gptconfig_nano)
-    model = GPT(config).cuda()
+    model = GPT(config).cpu()
     # print(model)
     fake_input = torch.rand(2, 10) * 100  # batch_size, seq_length
-    fake_input = fake_input.long().cuda()
+    fake_input = fake_input.long().cpu()
     pred, _ = model(fake_input)
     print(pred)
     masked_lm_labels = torch.randn(2, 10) * 100
-    masked_lm_labels = masked_lm_labels.long().cuda()
+    masked_lm_labels = masked_lm_labels.long().cpu()
     masked_lm_labels[masked_lm_labels < 50] = config.ignore_index
     pred, loss = model(fake_input, masked_lm_labels)
     print(loss)
     loss.backward()
-    idxs = model.generate(fake_input, 20, 1.0, 100)
-    print(idxs.shape, idxs)
+    # idxs = model.generate(fake_input, 20, 1.0, 100)
+    # print(idxs.shape, idxs)
+
+    # RelationGPT
+    model = RelationGPT(config).cpu()
+    pred, _ = model(fake_input)
+    print(pred)
+    relation_labels = torch.rand(2)
+    pred, loss = model(fake_input, relation_labels)
+    print(loss)
+    loss.backward()
