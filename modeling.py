@@ -30,9 +30,9 @@ class CausalAttentionBlock(nn.Module):
         self.num_attention_heads = config.num_attention_heads
         self.attention_head_size = config.hidden_size // config.num_attention_heads
         self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
-        self.qkv = nn.Linear(config.hidden_size, 3 * config.hidden_size)
+        self.qkv = nn.Linear(config.hidden_size, 3 * config.hidden_size, bias=False)
         self.attention_dropout = nn.Dropout(config.dropout_prob)
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         self.hidden_dropout = nn.Dropout(config.dropout_prob)
         self.hidden_layernorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
         self.attention_out_layer = nn.Sequential(
