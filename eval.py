@@ -6,7 +6,7 @@ import re
 import modeling
 import tokenization
 from configs import gptconfigs
-from train import load_model
+from train_level_zero import load_model
 
 
 class Inferencer(object):

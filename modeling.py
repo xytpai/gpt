@@ -189,9 +189,13 @@ class RelationGPT(nn.Module):
 
 
 if __name__ == '__main__':
-    from configs import gptconfig_nano
+    from configs import gptconfig_nano, gptconfig_base
+    import numpy as np
     config = from_dict(data_class=GPTConfig, data=gptconfig_nano)
     model = GPT(config).cpu()
+    para = sum([np.prod(list(p.size())) for p in model.parameters()])
+    type_size = 4
+    print('Model {} : params: {:4f}B'.format(model._get_name(), para * type_size / 1000 / 1000 / 1000))
     # print(model)
     fake_input = torch.rand(2, 10) * 100  # batch_size, seq_length
     fake_input = fake_input.long().cpu()
