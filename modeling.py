@@ -18,13 +18,6 @@ class GPTConfig:
     flash_attention: bool
 
 
-class GPTGelu(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self, x):
-        return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
-
-
 class CausalAttentionBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -44,7 +37,7 @@ class CausalAttentionBlock(nn.Module):
         self.hidden_layernorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
         self.attention_out_layer = nn.Sequential(
                 nn.Linear(config.hidden_size, 2 * config.hidden_size, bias=False), 
-                GPTGelu(),
+                nn.GELU(),
                 nn.Linear(2 * config.hidden_size, config.hidden_size, bias=False), 
                 nn.Dropout(config.dropout_prob))
         if not self.flash:
@@ -191,7 +184,7 @@ class RelationGPT(nn.Module):
 if __name__ == '__main__':
     from configs import gptconfig_nano, gptconfig_base
     import numpy as np
-    config = from_dict(data_class=GPTConfig, data=gptconfig_base)
+    config = from_dict(data_class=GPTConfig, data=gptconfig_nano)
     model = GPT(config).cpu()
     para = sum([np.prod(list(p.size())) for p in model.parameters()])
     type_size = 4
