@@ -263,7 +263,7 @@ def parse_args():
     parser.add_argument('--no_load', action='store_true')
     parser.add_argument('--begin', type=int, default=0)
     parser.add_argument('--end', type=int, default=5000000)
-    parser.add_argument('--save_interval', type=int, default=100)
+    parser.add_argument('--save_interval', type=int, default=200)
     parser.add_argument('--num_save_files', type=int, default=10)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=32)
     args = parser.parse_args()
