@@ -108,7 +108,7 @@ def prepare_optimizer(args, model):
 
 def prepare_lr_scheduler(args, opt):
     training_steps = float(args.end / args.batch_size)
-    warmup_steps = 1 + training_steps * 0.002
+    warmup_steps = 2000
     lr_decay_steps = training_steps
     lr_min = float(args.lr_min)
     lr_base = float(args.lr_base)
