@@ -184,7 +184,7 @@ class RelationGPT(nn.Module):
 if __name__ == '__main__':
     from configs import gptconfig_nano, gptconfig_base
     import numpy as np
-    config = from_dict(data_class=GPTConfig, data=gptconfig_nano)
+    config = from_dict(data_class=GPTConfig, data=gptconfig_base)
     model = GPT(config).cpu()
     para = sum([np.prod(list(p.size())) for p in model.parameters()])
     type_size = 4
