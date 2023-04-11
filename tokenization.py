@@ -26,7 +26,7 @@ class Tokenizer(object):
         return pred
 
     def train(self, text_files):
-        trainer = BpeTrainer(special_tokens=["[BOS0]", "[BOS1]", "[BOS2]", "[SEP]", "[EOS]", "[UNK]"], vocab_size=96000)
+        trainer = BpeTrainer(special_tokens=["[BOS0]", "[BOS1]", "[BOS2]", "[SEP]", "[EOS]", "[UNK]"], vocab_size=48000)
         self.tokenizer.train(files=text_files, trainer=trainer)
 
     def save(self):
