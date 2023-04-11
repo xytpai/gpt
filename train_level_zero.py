@@ -158,17 +158,17 @@ class Trainer(object):
             self.tensorboard.close()
             self.pbar.close()
 
-    def __step_tools(self, reduced_batch_size, reduced_loss):
-        self.milestone += reduced_batch_size
+    def __step_tools(self, reduced_loss):
+        self.milestone += 1
         if self.rank == 0:
             cur_lr = float(self.lr_scheduler.get_last_lr()[0])
-            self.count_for_save += reduced_batch_size
+            self.count_for_save += 1
             maxmem = int(torch.cuda.max_memory_allocated(device=self.rank) / 1024 / 1024)
             info = 'loss:%f, maxMem:%dMB, lr:%f' % (reduced_loss, maxmem, cur_lr)
             self.pbar.set_description(info)
             self.tensorboard.add_scalar('train/loss', reduced_loss, self.milestone)
             self.tensorboard.add_scalar('train/lr', cur_lr, self.milestone)
-            self.pbar.update(reduced_batch_size)
+            self.pbar.update(1)
 
     def __save_weight(self):
         if not os.path.exists(WEIGHT_DIR_NAME):
@@ -204,17 +204,13 @@ class Trainer(object):
         if self.milestone >= self.args.end:
             return True
         for i, (x, y) in enumerate(self.loader):
-
             # accumulate gradient
-            self.batch_size_count += x.shape[0]
             with autocast():
                 output, loss = self.model(x, y)
             self.scaler.scale(loss / float(self.args.gradient_accumulation_steps)).backward()
             if self.grad_acc_count < self.args.gradient_accumulation_steps - 1:
                 self.grad_acc_count += 1
                 continue
-            batch_size = self.batch_size_count
-            self.batch_size_count = 0
             self.grad_acc_count = 0
 
             # step optimizer
@@ -227,12 +223,9 @@ class Trainer(object):
             self.lr_scheduler.step()
 
             # setp utils
-            bs_loss_t = torch.empty(2).double()
-            bs_loss_t[0] = batch_size
-            bs_loss_t[1] = loss.item()
-            bs_loss_t = bs_loss_t.cuda(self.rank)
-            all_reduce(bs_loss_t, op=ReduceOp.SUM)
-            self.__step_tools(int(bs_loss_t[0].item()), float(bs_loss_t[1].item()) / self.args.world_size)
+            loss_t = torch.full((1, ), loss.item(), dtype=torch.double).cuda(self.rank)
+            all_reduce(loss_t, op=ReduceOp.SUM)
+            self.__step_tools(float(loss_t[0].item()) / self.args.world_size)
             if self.__step_saver():
                 return True
         return False
@@ -259,20 +252,20 @@ def main(rank, args, world_size):
 def parse_args():
     parser = argparse.ArgumentParser(description='GPT Training')
     parser.add_argument('--model', type=str, default='nano')
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seed', type=float, default=0)
     parser.add_argument('--data', type=str, default="./minidata")
-    parser.add_argument('--lr_base', type=float, default=6e-4)
-    parser.add_argument('--lr_min', type=float, default=6e-5)
-    parser.add_argument('--weight_decay', type=float, default=5e-3)
+    parser.add_argument('--lr_base', type=float, default=8e-6)
+    parser.add_argument('--lr_min', type=float, default=1e-6)
+    parser.add_argument('--weight_decay', type=float, default=2e-3)
     parser.add_argument('--grad_clip', type=float, default=1.0)
     parser.add_argument('--no_load', action='store_true')
     parser.add_argument('--begin', type=int, default=0)
-    parser.add_argument('--end', type=int, default=14000)
-    parser.add_argument('--save_interval', type=int, default=4000)
+    parser.add_argument('--end', type=int, default=5000000)
+    parser.add_argument('--save_interval', type=int, default=100)
     parser.add_argument('--num_save_files', type=int, default=10)
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=8)
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=32)
     args = parser.parse_args()
     new_args = gptconfigs[args.model]
     new_args.update(vars(args))
