@@ -148,7 +148,7 @@ class Trainer(object):
     def __create_tools(self):
         self.milestone = self.args.begin
         if self.rank == 0:
-            self.pbar = tqdm(total=self.args.end)
+            self.pbar = tqdm(total=self.args.end, ncols=80)
             self.pbar.update(self.args.begin)
             self.tensorboard = SummaryWriter('summary')
             self.count_for_save = 0
@@ -163,8 +163,7 @@ class Trainer(object):
         if self.rank == 0:
             cur_lr = float(self.lr_scheduler.get_last_lr()[0])
             self.count_for_save += 1
-            maxmem = int(torch.cuda.max_memory_allocated(device=self.rank) / 1024 / 1024)
-            info = 'loss:%f, maxMem:%dMB, lr:%f' % (reduced_loss, maxmem, cur_lr)
+            info = 'loss[%f]' % (reduced_loss)
             self.pbar.set_description(info)
             self.tensorboard.add_scalar('train/loss', reduced_loss, self.milestone)
             self.tensorboard.add_scalar('train/lr', cur_lr, self.milestone)
