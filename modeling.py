@@ -18,8 +18,9 @@ def apply_rotary_emb(xq, xk, freqs_cis):
     # batch_size, nhead, t, hidden_size = xq.shape
     xq_ = xq.float().reshape(*xq.shape[:-1], -1, 2)
     xk_ = xk.float().reshape(*xk.shape[:-1], -1, 2)
-    xq_out = (xq_ * freqs_cis).flatten(3)
-    xk_out = (xk_ * freqs_cis).flatten(3)
+    freqs_cis = torch.view_as_complex(freqs_cis)
+    xq_out = torch.view_as_real(torch.view_as_complex(xq_) * freqs_cis).flatten(3)
+    xk_out = torch.view_as_real(torch.view_as_complex(xk_) * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
