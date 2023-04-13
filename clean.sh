@@ -6,6 +6,11 @@ case $para in
         rm -rf ./checkpoints
         rm -rf __pycache__
         rm -rf .datacache
+        rm -rf ./ext/__pycache__
+        rm -rf ./ext/.pytest_cache
+        rm -rf ./ext/build
+        rm -rf ./ext/dist
+        rm -rf ./ext/*.egg-info
         ;;
     *)
         exit 1

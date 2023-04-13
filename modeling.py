@@ -4,6 +4,7 @@ from dacite import from_dict
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from ext.layers import RMSNorm
 
 
 def precompute_freqs_cis(dim, end, theta=10000.0):
@@ -22,20 +23,6 @@ def apply_rotary_emb(xq, xk, freqs_cis):
     xq_out = torch.view_as_real(torch.view_as_complex(xq_) * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(torch.view_as_complex(xk_) * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, dim, eps):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-
-    def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
-    def forward(self, x):
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
 
 
 @dataclass
@@ -61,11 +48,11 @@ class CausalAttentionBlock(nn.Module):
                 "heads (%d)" % (config.hidden_size, config.num_attention_heads))
         self.num_attention_heads = config.num_attention_heads
         self.attention_head_size = config.hidden_size // config.num_attention_heads
-        self.input_layernorm = RMSNorm(config.hidden_size, eps=1e-5)
+        self.input_layernorm = RMSNorm(config.hidden_size)
         self.qkv = nn.Linear(config.hidden_size, 3 * config.hidden_size, bias=False)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         self.hidden_dropout = nn.Dropout(config.dropout_prob)
-        self.hidden_layernorm = RMSNorm(config.hidden_size, eps=1e-5)
+        self.hidden_layernorm = RMSNorm(config.hidden_size)
         self.attention_out_layer = nn.Sequential(
                 nn.Linear(config.hidden_size, 2 * config.hidden_size, bias=False), 
                 nn.GELU(),
@@ -108,7 +95,7 @@ class GPT(nn.Module):
         freqs_cis = precompute_freqs_cis(config.hidden_size//config.num_attention_heads, config.max_position_embeddings*2)
         self.register_buffer('freqs_cis', freqs_cis, persistent=False)
         self.blocks = nn.ModuleList([CausalAttentionBlock(config) for _ in range(config.num_layers)])
-        self.layernorm = RMSNorm(config.hidden_size, eps=1e-5)
+        self.layernorm = RMSNorm(config.hidden_size)
         self.apply(self._init_weights)
         for pn, p in self.named_parameters():
             if pn.endswith('attention_out_layer.2.weight') or pn.endswith('dense.weight'):
