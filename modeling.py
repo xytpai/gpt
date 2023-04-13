@@ -103,15 +103,12 @@ class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.word_embeddings_name = 'word_embeddings_' + str(config.vocab_size)
+        setattr(self, self.word_embeddings_name, nn.Embedding(config.vocab_size, config.hidden_size))
         freqs_cis = precompute_freqs_cis(config.hidden_size//config.num_attention_heads, config.max_position_embeddings*2)
         self.register_buffer('freqs_cis', freqs_cis, persistent=False)
         self.blocks = nn.ModuleList([CausalAttentionBlock(config) for _ in range(config.num_layers)])
         self.layernorm = RMSNorm(config.hidden_size, eps=1e-5)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.word_embeddings.weight = self.lm_head.weight
-        assert id(self.word_embeddings.weight.untyped_storage()) == id(self.lm_head.weight.untyped_storage())
-
         self.apply(self._init_weights)
         for pn, p in self.named_parameters():
             if pn.endswith('attention_out_layer.2.weight') or pn.endswith('dense.weight'):
@@ -128,16 +125,17 @@ class GPT(nn.Module):
     def forward(self, input_ids, targets=None, start_pos=0):
         _, seq_length = input_ids.size()
         assert seq_length <= self.config.max_position_embeddings
-        embeddings = self.word_embeddings(input_ids) # (b, t, hidden_size)
+        word_embeddings_obj = getattr(self, self.word_embeddings_name)
+        embeddings = word_embeddings_obj(input_ids) # (b, t, hidden_size)
         for block in self.blocks:
             embeddings = block(embeddings, self.freqs_cis[start_pos:start_pos+seq_length])
         embeddings = self.layernorm(embeddings)
         if targets is not None:
-            output =  self.lm_head(embeddings) # b, t, vocab_size
+            output = F.linear(embeddings, word_embeddings_obj.weight, None) # b, t, vocab_size
             loss = F.cross_entropy(output.view(-1, output.size(-1)), 
                 targets.view(-1), ignore_index=self.config.ignore_index)
         else:
-            output = self.lm_head(embeddings[:, [-1], :]) # b, 1, vocab_size
+            output = F.linear(embeddings[:, [-1], :], word_embeddings_obj.weight, None) # b, 1, vocab_size
             loss = None
         return output, loss
 
@@ -177,7 +175,8 @@ class RelationGPT(GPT):
         # targets: LongTensor (batch_size)
         batch_size, seq_length = input_ids.size()
         assert seq_length <= self.config.max_position_embeddings
-        embeddings = self.word_embeddings(input_ids) # (b, t, hidden_size)
+        word_embeddings_obj = getattr(self, self.word_embeddings_name)
+        embeddings = word_embeddings_obj(input_ids) # (b, t, hidden_size)
         for block in self.blocks:
             embeddings = block(embeddings, self.freqs_cis[start_pos:start_pos+seq_length])
         embeddings = self.layernorm(embeddings)
@@ -193,10 +192,10 @@ class RelationGPT(GPT):
 if __name__ == '__main__':
     from configs import gptconfig_nano, gptconfig_base
     import numpy as np
-    config = from_dict(data_class=GPTConfig, data=gptconfig_nano)
+    config = from_dict(data_class=GPTConfig, data=gptconfig_base)
     model = GPT(config).cpu()
     para = sum([np.prod(list(p.size())) for p in model.parameters()])
-    type_size = 4
+    type_size = 1
     print('Model {} : params: {:4f}B'.format(model._get_name(), para * type_size / 1000 / 1000 / 1000))
     # print(model)
     fake_input = torch.rand(2, 10) * 100  # batch_size, seq_length

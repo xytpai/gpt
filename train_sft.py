@@ -37,7 +37,8 @@ def load_model(args, model):
         if len(files) > 0:
             args.begin = get_milestone(files[0])
             ckpt = torch.load(os.path.join(path, files[0]), map_location='cpu')
-            model.load_state_dict(ckpt['model'], strict=False)
+            missing_keys, unexpected_keys = model.load_state_dict(ckpt['model'], strict=False)
+            print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
             args.ckpt = ckpt
         return
 
@@ -92,7 +93,6 @@ def prepare_optimizer(args, model):
                 decay.add(full_param_name)
             elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
                 no_decay.add(full_param_name)
-    decay.remove('module.lm_head.weight')
     param_dict = {pn: p for pn, p in model.named_parameters()}
     inter_params = decay & no_decay
     union_params = decay | no_decay
