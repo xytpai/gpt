@@ -132,7 +132,7 @@ class GPT(nn.Module):
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at max_position_embeddings
             if input_ids.size(1) <= self.config.max_position_embeddings:
-                idx_cond = idx_cond
+                idx_cond = input_ids
             else:
                 idx_cond = input_ids[:, -self.config.max_position_embeddings:]
             # forward the model to get the logits for the index in the sequence
