@@ -82,7 +82,7 @@ def prepare_optimizer(args, model):
     decay = set()
     no_decay = set()
     whitelist_weight_modules = (torch.nn.Linear, )
-    blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
+    blacklist_weight_modules = (modeling.RMSNorm, torch.nn.Embedding)
     for mn, m in model.named_modules():
         for pn, p in m.named_parameters():
             full_param_name = '%s.%s' % (mn, pn) if mn else pn
