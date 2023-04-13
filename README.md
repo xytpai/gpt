@@ -26,7 +26,7 @@ export DATA_DIR=/data/chatdataset
 # python tokenization.py --dir=${DATA_DIR}
 
 # base training cmd
-python train_level_zero.py --model=nano --batch_size=1 --data=${DATA_DIR} --end=5000000 --gradient_accumulation_steps=16
+python train_sft.py --model=nano --batch_size=1 --data=${DATA_DIR} --end=5000000 --gradient_accumulation_steps=16
 
 # if you want to use tensorboard
 tensorboard --logdir=summary

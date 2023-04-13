@@ -6,6 +6,23 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
+def precompute_freqs_cis(dim, end, theta=10000.0):
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(end, device=freqs.device)
+    freqs = torch.outer(t, freqs).float()
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+    return torch.view_as_real(freqs_cis) # -> FloatTensor(end, dim//2, 2)
+
+
+def apply_rotary_emb(xq, xk, freqs_cis):
+    # batch_size, nhead, t, hidden_size = xq.shape
+    xq_ = xq.float().reshape(*xq.shape[:-1], -1, 2)
+    xk_ = xk.float().reshape(*xk.shape[:-1], -1, 2)
+    xq_out = (xq_ * freqs_cis).flatten(3)
+    xk_out = (xk_ * freqs_cis).flatten(3)
+    return xq_out.type_as(xq), xk_out.type_as(xk)
+
+
 @dataclass
 class GPTConfig:
     hidden_size: int
@@ -29,11 +46,11 @@ class CausalAttentionBlock(nn.Module):
                 "heads (%d)" % (config.hidden_size, config.num_attention_heads))
         self.num_attention_heads = config.num_attention_heads
         self.attention_head_size = config.hidden_size // config.num_attention_heads
-        self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=1e-5)
         self.qkv = nn.Linear(config.hidden_size, 3 * config.hidden_size, bias=False)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         self.hidden_dropout = nn.Dropout(config.dropout_prob)
-        self.hidden_layernorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.hidden_layernorm = nn.LayerNorm(config.hidden_size, eps=1e-5)
         self.attention_out_layer = nn.Sequential(
                 nn.Linear(config.hidden_size, 2 * config.hidden_size, bias=False), 
                 nn.GELU(),
@@ -45,12 +62,13 @@ class CausalAttentionBlock(nn.Module):
                 torch.ones(config.max_position_embeddings, config.max_position_embeddings)
                     ).view(1, 1, config.max_position_embeddings, config.max_position_embeddings))
 
-    def forward(self, x):
+    def forward(self, x, freqs_cis):
         batch_size, seq_length, hidden_size = x.size()
         q, k, v = self.qkv(self.input_layernorm(x)).split(hidden_size, dim=2)
         q = q.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
         k = k.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
         v = v.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
+        q, k = apply_rotary_emb(q, k, freqs_cis)
         if self.flash:
             output = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout_prob, is_causal=True)
         else:
@@ -70,11 +88,10 @@ class GPT(nn.Module):
         super().__init__()
         self.config = config
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.embeddings_dropout = nn.Dropout(config.dropout_prob)
+        freqs_cis = precompute_freqs_cis(config.hidden_size//config.num_attention_heads, config.max_position_embeddings*2)
+        self.register_buffer('freqs_cis', freqs_cis, persistent=False)
         self.blocks = nn.ModuleList([CausalAttentionBlock(config) for _ in range(config.num_layers)])
-        self.layernorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
-
+        self.layernorm = nn.LayerNorm(config.hidden_size, eps=1e-5)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.word_embeddings.weight = self.lm_head.weight
         assert id(self.word_embeddings.weight.untyped_storage()) == id(self.lm_head.weight.untyped_storage())
@@ -92,16 +109,12 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
     
-    def forward(self, input_ids, targets=None):
-        device = input_ids.device
+    def forward(self, input_ids, targets=None, start_pos=0):
         _, seq_length = input_ids.size()
         assert seq_length <= self.config.max_position_embeddings
-        pos = torch.arange(0, seq_length, dtype=torch.long, device=device).unsqueeze(0) # (1, t)
-        word_embeddings = self.word_embeddings(input_ids) # (b, t, hidden_size)
-        position_embeddings = self.position_embeddings(pos) # (1, t, n_embd)
-        embeddings = self.embeddings_dropout(word_embeddings + position_embeddings)
+        embeddings = self.word_embeddings(input_ids) # (b, t, hidden_size)
         for block in self.blocks:
-            embeddings = block(embeddings)
+            embeddings = block(embeddings, self.freqs_cis[start_pos:start_pos+seq_length])
         embeddings = self.layernorm(embeddings)
         if targets is not None:
             output =  self.lm_head(embeddings) # b, t, vocab_size
@@ -118,8 +131,10 @@ class GPT(nn.Module):
         len_input = input_ids.numel()
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at max_position_embeddings
-            idx_cond = input_ids if input_ids.size(1) <= self.config.max_position_embeddings \
-                else input_ids[:, -self.config.max_position_embeddings:]
+            if input_ids.size(1) <= self.config.max_position_embeddings:
+                idx_cond = idx_cond
+            else:
+                idx_cond = input_ids[:, -self.config.max_position_embeddings:]
             # forward the model to get the logits for the index in the sequence
             output, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
@@ -137,40 +152,18 @@ class GPT(nn.Module):
         return input_ids[:, len_input:]
 
 
-class RelationGPT(nn.Module):
+class RelationGPT(GPT):
     def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.embeddings_dropout = nn.Dropout(config.dropout_prob)
-        self.blocks = nn.ModuleList([CausalAttentionBlock(config) for _ in range(config.num_layers)])
-        self.layernorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
-        self.score_head = nn.Linear(config.hidden_size, 1, bias=False)
-        self.apply(self._init_weights)
-        for pn, p in self.named_parameters():
-            if pn.endswith('attention_out_layer.2.weight') or pn.endswith('dense.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.num_layers))
+        super().__init__(config)
+        self.score_head = nn.Linear(config.hidden_size, 1)
 
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-
-    def forward(self, input_ids, targets=None):
+    def forward(self, input_ids, targets=None, start_pos=0):
         # targets: LongTensor (batch_size)
-        device = input_ids.device
         batch_size, seq_length = input_ids.size()
         assert seq_length <= self.config.max_position_embeddings
-        pos = torch.arange(0, seq_length, dtype=torch.long, device=device).unsqueeze(0) # (1, t)
-        word_embeddings = self.word_embeddings(input_ids) # (b, t, hidden_size)
-        position_embeddings = self.position_embeddings(pos) # (1, t, n_embd)
-        embeddings = self.embeddings_dropout(word_embeddings + position_embeddings)
+        embeddings = self.word_embeddings(input_ids) # (b, t, hidden_size)
         for block in self.blocks:
-            embeddings = block(embeddings)
+            embeddings = block(embeddings, self.freqs_cis[start_pos:start_pos+seq_length])
         embeddings = self.layernorm(embeddings)
         output = self.score_head(embeddings[:, [-1], :]).view(batch_size)
         if targets is not None:
@@ -184,7 +177,7 @@ class RelationGPT(nn.Module):
 if __name__ == '__main__':
     from configs import gptconfig_nano, gptconfig_base
     import numpy as np
-    config = from_dict(data_class=GPTConfig, data=gptconfig_base)
+    config = from_dict(data_class=GPTConfig, data=gptconfig_nano)
     model = GPT(config).cpu()
     para = sum([np.prod(list(p.size())) for p in model.parameters()])
     type_size = 4
