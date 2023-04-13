@@ -58,9 +58,10 @@ class CausalAttentionBlock(nn.Module):
                 nn.Dropout(config.dropout_prob))
         if not self.flash:
             self.attention_dropout = nn.Dropout(config.dropout_prob)
-            self.register_buffer("bias", torch.tril(
+            self.register_buffer('bias', torch.tril(
                 torch.ones(config.max_position_embeddings, config.max_position_embeddings)
-                    ).view(1, 1, config.max_position_embeddings, config.max_position_embeddings))
+                    ).view(1, 1, config.max_position_embeddings, config.max_position_embeddings),
+                persistent=False)
 
     def forward(self, x, freqs_cis):
         batch_size, seq_length, hidden_size = x.size()
