@@ -11,10 +11,10 @@ gptconfig_nano.num_layers = 32
 gptconfig_nano.ignore_index = -1
 gptconfig_nano.flash_attention = True
 
-# 2.246052B
+# 8.787071B
 gptconfig_base = Dict()
-gptconfig_base.hidden_size = 2048
-gptconfig_base.num_attention_heads = 32
+gptconfig_base.hidden_size = 4096
+gptconfig_base.num_attention_heads = 64
 gptconfig_base.vocab_size = 48000
 gptconfig_base.dropout_prob = 0.1
 gptconfig_base.max_position_embeddings = 1024
