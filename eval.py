@@ -25,6 +25,7 @@ class Inferencer(object):
         ids = torch.LongTensor(ids).view(1, -1)
         if isinstance(d, int):
             ids = ids.cuda(d)
+            self.model = self.model.cuda(d)
         with torch.no_grad():
             ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings, temperature=0.6)
             ids_o = list(ids_o.cpu()[0].numpy())
@@ -50,8 +51,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GPT Evaluating')
     parser.add_argument('--model', type=str, default='nano')
     parser.add_argument('--devices', type=list, default=['cpu'])
+    parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--text', type=str, default='')
     args = parser.parse_args()
+    if args.cuda:
+        args.devices = [0]
     new_args = gptconfigs[args.model]
     new_args.update(vars(args))
     main(new_args)
