@@ -48,6 +48,14 @@ def load_model(args, model):
     return
 
 
+def freeze_layers(args, model):
+    if args.freeze == 'layers':
+        for name, param in model.named_parameters():
+            if name.startswith('layers'):
+                print('freeze ' + name)
+                param.requires_grad = False
+
+
 def prepare_device(args):
     print('launch rank:' + str(args.rank))
     rank = args.rank
@@ -64,6 +72,8 @@ def prepare_model(args):
     config = from_dict(data_class=modeling.GPTConfig, data=args)
     print('config:', config)
     model = modeling.GPT(config)
+    if args.half:
+        model = model.half()
     if not args.no_load:
         load_model(args, model)
     model = model.cuda(args.rank)
@@ -242,6 +252,7 @@ def main(rank, args, world_size):
     args.world_size = world_size
     prepare_device(args)
     model = prepare_model(args)
+    freeze_layers(args, model)
     dataset = prepare_dataset(args)
     loader =prepare_loader(args, dataset)
     opt = prepare_optimizer(args, model)
@@ -273,6 +284,8 @@ def parse_args():
     parser.add_argument('--num_save_files', type=int, default=10)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=32)
     parser.add_argument('--load', type=str, default='')
+    parser.add_argument('--half', action='store_true')
+    parser.add_argument('--freeze', type=str, default='')
     args = parser.parse_args()
     new_args = gptconfigs[args.model]
     new_args.update(vars(args))
