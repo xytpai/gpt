@@ -28,23 +28,24 @@ os.environ['MASTER_PORT'] = '12355'
 def load_model(args, model):
     def get_milestone(fname):
         return int(fname.split('_')[1].replace('.ckpt', ''))
-    for path, dir_list, file_list in os.walk(WEIGHT_DIR_NAME):
-        files = []
+    files = []
+    load_dir = args.load if len(args.load) > 0 else WEIGHT_DIR_NAME
+    for path, dir_list, file_list in os.walk(load_dir):
         for file in file_list:
             if file.endswith('.ckpt') and file.startswith(args.model):
                 files.append(file)
-        files = sorted(files, key=lambda x : get_milestone(x), reverse=True)
-        if len(files) > 0:
-            args.begin = get_milestone(files[0])
-            ckpt = torch.load(os.path.join(path, files[0]), map_location='cpu')
-            ckpt_model = ckpt.get('model', None)
-            if ckpt_model is None:
-                missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
-            else:
-                missing_keys, unexpected_keys = model.load_state_dict(ckpt_model, strict=False)
-            print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
-            args.ckpt = ckpt
-        return
+    files = sorted(files, key=lambda x : get_milestone(x), reverse=True)
+    if len(files) > 0:
+        args.begin = get_milestone(files[0])
+        ckpt = torch.load(os.path.join(path, files[0]), map_location='cpu')
+        ckpt_model = ckpt.get('model', None)
+        if ckpt_model is None:
+            missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+        else:
+            missing_keys, unexpected_keys = model.load_state_dict(ckpt_model, strict=False)
+        print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
+        args.ckpt = ckpt
+    return
 
 
 def prepare_device(args):
@@ -271,6 +272,7 @@ def parse_args():
     parser.add_argument('--save_interval', type=int, default=200)
     parser.add_argument('--num_save_files', type=int, default=10)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=32)
+    parser.add_argument('--load', type=str, default='')
     args = parser.parse_args()
     new_args = gptconfigs[args.model]
     new_args.update(vars(args))
