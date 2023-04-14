@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import gpt_ext
-import layers
+from ext import *
 
 
-class RMSNorm(nn.Module):
+class RMSNormRef(nn.Module):
     def __init__(self, dim, eps=1e-5):
         super().__init__()
         self.eps = eps
@@ -20,12 +20,12 @@ class RMSNorm(nn.Module):
 
 def test_rms_norm_fw_cuda(dtype):
     print('test_rms_norm_fw_cuda', dtype)
-    modelb = RMSNorm(64)
-    model0 = RMSNorm(768)
-    model1 = RMSNorm(2048)
-    model2 = RMSNorm(4096)
-    model3 = RMSNorm(16384)
-    model4 = RMSNorm(16384*4+123)
+    modelb = RMSNormRef(64)
+    model0 = RMSNormRef(768)
+    model1 = RMSNormRef(2048)
+    model2 = RMSNormRef(4096)
+    model3 = RMSNormRef(16384)
+    model4 = RMSNormRef(16384*4+123)
     hszs = [64, 768, 2048, 4096, 16384, 16384*4+123]
     ls = [modelb, model0, model1, model2, model3, model4]
     for i, model in enumerate(ls):
@@ -42,17 +42,17 @@ def test_rms_norm_fw_cuda(dtype):
 
 def test_rms_norm_bw_cuda(dtype):
     print('test_rms_norm_bw_cuda', dtype)
-    modelb = RMSNorm(64)
-    model0 = RMSNorm(768)
-    model1 = RMSNorm(2048)
-    model2 = RMSNorm(4096)
-    model3 = RMSNorm(16384)
-    model4 = RMSNorm(16384*4+123)
+    modelb = RMSNormRef(64)
+    model0 = RMSNormRef(768)
+    model1 = RMSNormRef(2048)
+    model2 = RMSNormRef(4096)
+    model3 = RMSNormRef(16384)
+    model4 = RMSNormRef(16384*4+123)
     hszs = [64, 768, 2048, 4096, 16384, 16384*4+123]
     ls = [modelb, model0, model1, model2, model3, model4]
     for i, model in enumerate(ls):
         hsz = hszs[i]
-        model_ = layers.RMSNorm(hsz).cuda()
+        model_ = RMSNorm(hsz).cuda()
         # model_.weight[:] = model.weight
 
         input_case = torch.randn(4, 1024, hsz)

@@ -9,6 +9,8 @@ Please make sure that you have installed a CUDA environment with pytorch >=2.0. 
 
 ```bash
 pip install -r requirements.txt
+cd ext; python setup.py install; cd ..
+python check_ext.py
 ```
 
 #### Prepare the basic dataset

@@ -4,7 +4,7 @@ from dacite import from_dict
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from ext.layers import RMSNorm
+from ext import RMSNorm
 
 
 def precompute_freqs_cis(dim, end, theta=10000.0):
