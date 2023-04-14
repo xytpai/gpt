@@ -132,8 +132,9 @@ class GPT(nn.Module):
         assert seq_length <= self.config.max_position_embeddings
         word_embeddings_obj = getattr(self, self.word_embeddings_name)
         embeddings = word_embeddings_obj(input_ids) # (b, t, hidden_size)
+        freqs_cis = self.freqs_cis.float()
         for layer in self.layers:
-            embeddings = layer(embeddings, self.freqs_cis[start_pos:start_pos+seq_length])
+            embeddings = layer(embeddings, freqs_cis[start_pos:start_pos+seq_length])
         embeddings = self.norm(embeddings)
         if targets is not None:
             output = F.linear(embeddings, word_embeddings_obj.weight, None) # b, t, vocab_size

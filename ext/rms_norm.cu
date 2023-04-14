@@ -37,7 +37,7 @@ __inline__ __device__ T block_reduce_sum(T val, T* shared, const int tid) {
 template<typename scalar_t>
 __global__ void rms_norm_fw_kernel(
 	const scalar_t *input, 
-	const float *weight, 
+	const scalar_t *weight, 
 	scalar_t *output, 
 	const int hidden_size)
 {
@@ -67,7 +67,7 @@ at::Tensor rms_norm_fw_cuda(const at::Tensor &input, const at::Tensor &weight)
 {
 	CHECK_CUDA(input);
 	CHECK_CUDA(weight);
-	TORCH_CHECK(weight.dtype() == at::ScalarType::Float);
+	// TORCH_CHECK(weight.dtype() == at::ScalarType::Float);
 	const int batch_size = input.size(0);
 	const int t_size = input.size(1);
 	const int hidden_size = input.size(2);
@@ -86,7 +86,7 @@ at::Tensor rms_norm_fw_cuda(const at::Tensor &input, const at::Tensor &weight)
 		using acc_t = at::acc_type<scalar_t, true>;
 		rms_norm_fw_kernel<<<grid, block, 32 * sizeof(acc_t), cuda_stream>>>(
 			input.contiguous().data<scalar_t>(),
-			weight.contiguous().data<float>(),
+			weight.contiguous().data<scalar_t>(),
 			output.data<scalar_t>(),
 			hidden_size);
     });
@@ -98,7 +98,7 @@ template<typename scalar_t>
 __global__ void rms_norm_bw_kernel(
 	const scalar_t *grad, 
 	const scalar_t *input, 
-	const float *weight, 
+	const scalar_t *weight, 
 	scalar_t *grad_input,
 	scalar_t *grad_weight,
 	const int hidden_size)
@@ -138,7 +138,7 @@ __global__ void rms_norm_bw_kernel(
 
 std::tuple<at::Tensor, at::Tensor> rms_norm_bw_cuda(const at::Tensor &grad, const at::Tensor &input, const at::Tensor &weight)
 {
-	TORCH_CHECK(weight.dtype() == at::ScalarType::Float);
+	// TORCH_CHECK(weight.dtype() == at::ScalarType::Float);
 	const int batch_size = input.size(0);
 	const int t_size = input.size(1);
 	const int hidden_size = input.size(2);
@@ -159,7 +159,7 @@ std::tuple<at::Tensor, at::Tensor> rms_norm_bw_cuda(const at::Tensor &grad, cons
 		rms_norm_bw_kernel<<<grid, block, 32 * sizeof(acc_t), cuda_stream>>>(
 			grad.contiguous().data<scalar_t>(),
 			input.contiguous().data<scalar_t>(),
-			weight.contiguous().data<float>(),
+			weight.contiguous().data<scalar_t>(),
 			grad_input.data<scalar_t>(),
 			grad_weight.data<scalar_t>(),
 			hidden_size);
