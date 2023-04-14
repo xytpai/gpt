@@ -37,7 +37,20 @@ class GPTConfig:
     flash_attention: bool
 
 
-class CausalAttentionBlock(nn.Module):
+class FeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim, multiple_of=256):
+        super().__init__()
+        hidden_dim = int(2 * hidden_dim / 3)
+        hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+
+    def forward(self, x):
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+
+class CausalAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.flash = config.flash_attention
@@ -48,16 +61,10 @@ class CausalAttentionBlock(nn.Module):
                 "heads (%d)" % (config.hidden_size, config.num_attention_heads))
         self.num_attention_heads = config.num_attention_heads
         self.attention_head_size = config.hidden_size // config.num_attention_heads
-        self.input_layernorm = RMSNorm(config.hidden_size)
-        self.qkv = nn.Linear(config.hidden_size, 3 * config.hidden_size, bias=False)
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.hidden_dropout = nn.Dropout(config.dropout_prob)
-        self.hidden_layernorm = RMSNorm(config.hidden_size)
-        self.attention_out_layer = nn.Sequential(
-                nn.Linear(config.hidden_size, 2 * config.hidden_size, bias=False), 
-                nn.GELU(),
-                nn.Linear(2 * config.hidden_size, config.hidden_size, bias=False), 
-                nn.Dropout(config.dropout_prob))
+        self.wq = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.wk = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.wv = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.wo = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         if not self.flash:
             self.attention_dropout = nn.Dropout(config.dropout_prob)
             self.register_buffer('bias', torch.tril(
@@ -67,10 +74,9 @@ class CausalAttentionBlock(nn.Module):
 
     def forward(self, x, freqs_cis):
         batch_size, seq_length, hidden_size = x.size()
-        q, k, v = self.qkv(self.input_layernorm(x)).split(hidden_size, dim=2)
-        q = q.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
-        k = k.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
-        v = v.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
+        q = self.wq(x).view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
+        k = self.wk(x).view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
+        v = self.wv(x).view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size).transpose(1, 2) # -> (b, nh, t, hs)
         q, k = apply_rotary_emb(q, k, freqs_cis)
         if self.flash:
             output = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout_prob, is_causal=True)
@@ -81,9 +87,21 @@ class CausalAttentionBlock(nn.Module):
             attention_probs = self.attention_dropout(attention_probs) # -> (b, nh, t, t)
             output = torch.matmul(attention_probs, v) # -> (b, nh, t, hs)
         output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, hidden_size)
-        output = x + self.hidden_dropout(self.dense(output))
-        output = output + self.attention_out_layer(self.hidden_layernorm(output))
-        return output
+        return self.wo(output)
+
+
+class TransformerBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.attention = CausalAttention(config)
+        self.feed_forward = FeedForward(dim=config.hidden_size, hidden_dim=4*config.hidden_size)
+        self.attention_norm = RMSNorm(config.hidden_size)
+        self.ffn_norm = RMSNorm(config.hidden_size)
+
+    def forward(self, x, freqs_cis):
+        h = x + self.attention(self.attention_norm(x), freqs_cis)
+        out = h + self.feed_forward(self.ffn_norm(h))
+        return out
 
 
 class GPT(nn.Module):
@@ -94,8 +112,8 @@ class GPT(nn.Module):
         setattr(self, self.word_embeddings_name, nn.Embedding(config.vocab_size, config.hidden_size))
         freqs_cis = precompute_freqs_cis(config.hidden_size//config.num_attention_heads, config.max_position_embeddings*2)
         self.register_buffer('freqs_cis', freqs_cis, persistent=False)
-        self.blocks = nn.ModuleList([CausalAttentionBlock(config) for _ in range(config.num_layers)])
-        self.layernorm = RMSNorm(config.hidden_size)
+        self.layers = nn.ModuleList([TransformerBlock(config) for _ in range(config.num_layers)])
+        self.norm = RMSNorm(config.hidden_size)
         self.apply(self._init_weights)
         for pn, p in self.named_parameters():
             if pn.endswith('attention_out_layer.2.weight') or pn.endswith('dense.weight'):
@@ -114,9 +132,9 @@ class GPT(nn.Module):
         assert seq_length <= self.config.max_position_embeddings
         word_embeddings_obj = getattr(self, self.word_embeddings_name)
         embeddings = word_embeddings_obj(input_ids) # (b, t, hidden_size)
-        for block in self.blocks:
-            embeddings = block(embeddings, self.freqs_cis[start_pos:start_pos+seq_length])
-        embeddings = self.layernorm(embeddings)
+        for layer in self.layers:
+            embeddings = layer(embeddings, self.freqs_cis[start_pos:start_pos+seq_length])
+        embeddings = self.norm(embeddings)
         if targets is not None:
             output = F.linear(embeddings, word_embeddings_obj.weight, None) # b, t, vocab_size
             loss = F.cross_entropy(output.view(-1, output.size(-1)), 
@@ -179,7 +197,7 @@ class RelationGPT(GPT):
 if __name__ == '__main__':
     from configs import gptconfig_nano, gptconfig_base
     import numpy as np
-    config = from_dict(data_class=GPTConfig, data=gptconfig_base)
+    config = from_dict(data_class=GPTConfig, data=gptconfig_nano)
     model = GPT(config).cpu()
     para = sum([np.prod(list(p.size())) for p in model.parameters()])
     type_size = 1

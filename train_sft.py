@@ -37,7 +37,11 @@ def load_model(args, model):
         if len(files) > 0:
             args.begin = get_milestone(files[0])
             ckpt = torch.load(os.path.join(path, files[0]), map_location='cpu')
-            missing_keys, unexpected_keys = model.load_state_dict(ckpt['model'], strict=False)
+            ckpt_model = ckpt.get('model', None)
+            if ckpt_model is None:
+                missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+            else:
+                missing_keys, unexpected_keys = model.load_state_dict(ckpt_model, strict=False)
             print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
             args.ckpt = ckpt
         return
@@ -123,7 +127,9 @@ def prepare_lr_scheduler(args, opt):
             return (lr_min + coeff * (lr_base - lr_min)) / lr_base
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
     if args.get('ckpt', None) is not None:
-        lr_scheduler.load_state_dict(args.ckpt['lr_scheduler'])
+        lr_sd = args.ckpt.get('lr_scheduler', None)
+        if lr_sd is not None:
+            lr_scheduler.load_state_dict(lr_sd)
     return lr_scheduler
 
 
