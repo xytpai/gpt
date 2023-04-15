@@ -16,7 +16,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group, all_reduce, ReduceOp
 
 import modeling
-import tokenization
 import datasets
 from configs import gptconfigs
 
@@ -43,7 +42,8 @@ def load_model(args, model):
             missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
         else:
             missing_keys, unexpected_keys = model.load_state_dict(ckpt_model, strict=False)
-        print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
+        if len(missing_keys) > 0 or len(unexpected_keys) > 0:
+            print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
         args.ckpt = ckpt
     return
 
@@ -76,6 +76,7 @@ def prepare_model(args):
         model = model.half()
     if not args.no_load:
         load_model(args, model)
+    freeze_layers(args, model)
     model = model.cuda(args.rank)
     model = DDP(model, device_ids=[args.rank])
     model.train()
@@ -252,7 +253,6 @@ def main(rank, args, world_size):
     args.world_size = world_size
     prepare_device(args)
     model = prepare_model(args)
-    freeze_layers(args, model)
     dataset = prepare_dataset(args)
     loader =prepare_loader(args, dataset)
     opt = prepare_optimizer(args, model)
