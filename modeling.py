@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+import re
 from dacite import from_dict
 import torch
 import torch.nn as nn
@@ -164,6 +165,13 @@ class GPT(nn.Module):
                 v, _ = torch.topk(output, min(top_k, output.size(-1)))
                 output[output < v[:, [-1]]] = -float('Inf')
             idx_next = torch.multinomial(F.softmax(output, dim=-1), num_samples=1) # b
+
+            # print
+            raw = tokenizer.ids_to_text([idx_next])
+            if(len(re.findall(r'\b[A-Za-z]+\b', raw))) > 0:
+                raw = raw + ' '
+            print(raw, end='', flush=True)
+
             if idx_next.item() == eos:
                 break
                 # pass

@@ -1,7 +1,6 @@
 import argparse
 from dacite import from_dict
 import torch
-import re
 
 import modeling
 import tokenization
@@ -28,11 +27,6 @@ class Inferencer(object):
             self.model = self.model.cuda(d)
         with torch.no_grad():
             ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings, temperature=0.6)
-            ids_o = list(ids_o.cpu()[0].numpy())
-            ids_inv = self.tokenizer.ids_to_text(ids_o)
-            text = re.sub(r'\s+([\u4e00-\u9fff]+)\s+', r'\1', ids_inv)
-            # text = ids_inv.replace(' ', '')
-            print(text)
 
 
 def main(args):
