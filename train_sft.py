@@ -54,6 +54,12 @@ def freeze_layers(args, model):
             if name.startswith('layers'):
                 print('freeze ' + name)
                 param.requires_grad = False
+    elif args.freeze == 'attention':
+        for name, param in model.named_parameters():
+            if ('attention.wq' in name) or ('attention.wk' in name) \
+                or ('attention.wv' in name):
+                print('freeze ' + name)
+                param.requires_grad = False
 
 
 def prepare_device(args):
