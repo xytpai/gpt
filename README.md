@@ -1,6 +1,7 @@
 ### GPT
 
-This is the simplest natural language processing model (2.5B). 
+This is the simplest natural language processing model.
+Our model backbone is fully compatible with llama.
 The entire project includes distributed training (DDP) and inference.
 The training method is to predict the next word.
 Please make sure that you have installed a CUDA environment with pytorch >=2.0. The specific usage instructions are as follows:
