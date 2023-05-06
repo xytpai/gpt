@@ -23,10 +23,14 @@ https://huggingface.co/datasets/xytpai/chatdataset
 
 ```bash
 # Change to your dataset dir (containing *.txtl)
-export DATA_DIR=/data/chatdataset
+export DATA_DIR=/data/chatdataset/merges
 
-# If you want to re-generate vocab.json
+# If you want to re-generate vocab.json:
+# rm -rf vocab.json
 # python tokenization.py --dir=${DATA_DIR}
+
+# After re-generate vocab, your should tune word embedding first
+# python train_sft.py --model=nano --batch_size=4 --data=${DATA_DIR} --end=5000000 --gradient_accumulation_steps=4 --freeze=layers
 
 # base training cmd
 python train_sft.py --model=nano --batch_size=4 --data=${DATA_DIR} --end=5000000 --gradient_accumulation_steps=4
@@ -38,5 +42,5 @@ tensorboard --logdir=summary
 #### Predicting Demo
 
 ```bash
-python eval.py --model=nano --text="Hello"
+python eval.py --model=nano --text="你好"
 ```
