@@ -9,10 +9,11 @@ VOCAB_FILE = 'vocab.json'
 
 
 class Tokenizer(object):
-    def __init__(self):
-        if os.path.exists(VOCAB_FILE):
+    def __init__(self, vocab=VOCAB_FILE):
+        self.VOCAB_FILE = vocab
+        if os.path.exists(self.VOCAB_FILE):
             # print('load vocab file')
-            self.tokenizer = tokenizers.Tokenizer.from_file(VOCAB_FILE)
+            self.tokenizer = tokenizers.Tokenizer.from_file(self.VOCAB_FILE)
         else:
             self.tokenizer = tokenizers.Tokenizer(BPE())
         self.tokenizer.pre_tokenizer = Whitespace()
@@ -30,7 +31,7 @@ class Tokenizer(object):
         self.tokenizer.train(files=text_files, trainer=trainer)
 
     def save(self):
-        self.tokenizer.save(VOCAB_FILE)
+        self.tokenizer.save(self.VOCAB_FILE)
 
 
 def main(args):

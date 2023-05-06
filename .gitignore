@@ -142,6 +142,7 @@ weights/
 summary/
 test.*
 out_*
+old_*
 test_*
 # vocab.json
 checkpoints/

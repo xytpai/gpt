@@ -26,11 +26,11 @@ https://huggingface.co/datasets/xytpai/chatdataset
 export DATA_DIR=/data/chatdataset/merges
 
 # If you want to re-generate vocab.json:
-# rm -rf vocab.json
+# mv vocab.json old_vocab.json
 # python tokenization.py --dir=${DATA_DIR}
-
-# After re-generate vocab, your should tune word embedding first
-# python train_sft.py --model=nano --batch_size=4 --data=${DATA_DIR} --end=5000000 --gradient_accumulation_steps=4 --freeze=layers
+# export CKPT_FILE=checkpoints/nano_0001913600.ckpt # Change to your ckpt
+# python migrate_wordemb.py --param=word_embeddings_56000.weight --old_vocab=old_vocab.json --ckpt=${CKPT_FILE}
+# rm -rf ${CKPT_FILE} ; mv ${CKPT_FILE}.new ${CKPT_FILE} ; rm -rf old_vocab.json
 
 # base training cmd
 python train_sft.py --model=nano --batch_size=4 --data=${DATA_DIR} --end=5000000 --gradient_accumulation_steps=4
