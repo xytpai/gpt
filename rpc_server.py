@@ -1,6 +1,7 @@
 import argparse
 from dacite import from_dict
 import torch
+from xmlrpc.server import SimpleXMLRPCServer
 
 import modeling
 import tokenization
@@ -27,9 +28,11 @@ class Inferencer(object):
             self.model = self.model.cuda(d)
         with torch.no_grad():
             ids_o = self.model.generate(self.tokenizer, ids, self.args.max_position_embeddings, temperature=0.5)
+            return ids_o
 
 
 def main(args):
+
     config = from_dict(data_class=modeling.GPTConfig, data=args)
     model = modeling.GPT(config)
     load_model(args, model)
@@ -37,7 +40,14 @@ def main(args):
         model = model.cuda(args.devices[0])
     model.eval()
     infer = Inferencer(args, model)
-    infer.pred(args.text)
+
+    def response(str):
+        print('user:'+str)
+        return infer.pred(str)[1]
+
+    server = SimpleXMLRPCServer(('192.168.50.19', 8888))
+    server.register_function(response, 'get')
+    server.serve_forever()
     pass
 
 
@@ -46,7 +56,6 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str, default='nano')
     parser.add_argument('--devices', type=list, default=['cpu'])
     parser.add_argument('--cuda', action='store_true')
-    parser.add_argument('--text', type=str, default='')
     args = parser.parse_args()
     if args.cuda:
         args.devices = [0]

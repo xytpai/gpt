@@ -150,6 +150,7 @@ class GPT(nn.Module):
     def generate(self, tokenizer, input_ids, max_new_tokens, temperature=1.0, top_k=None):
         eos = tokenizer.text_to_ids('[EOS]')[0]
         len_input = input_ids.numel()
+        raws = []
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at max_position_embeddings
             if input_ids.size(1) <= self.config.max_position_embeddings:
@@ -171,36 +172,14 @@ class GPT(nn.Module):
             if(len(re.findall(r'\b[A-Za-z]+\b', raw))) > 0:
                 raw = raw + ' '
             print(raw, end='', flush=True)
+            raws.append(raw)
 
             if idx_next.item() == eos:
                 break
                 # pass
             # append sampled index to the running sequence and continue
             input_ids = torch.cat((input_ids, idx_next), dim=1)
-        return input_ids[:, len_input:]
-
-
-class RelationGPT(GPT):
-    def __init__(self, config):
-        super().__init__(config)
-        self.score_head = nn.Linear(config.hidden_size, 1)
-
-    def forward(self, input_ids, targets=None, start_pos=0):
-        # targets: LongTensor (batch_size)
-        batch_size, seq_length = input_ids.size()
-        assert seq_length <= self.config.max_position_embeddings
-        word_embeddings_obj = getattr(self, self.word_embeddings_name)
-        embeddings = word_embeddings_obj(input_ids) # (b, t, hidden_size)
-        for block in self.blocks:
-            embeddings = block(embeddings, self.freqs_cis[start_pos:start_pos+seq_length])
-        embeddings = self.layernorm(embeddings)
-        output = self.score_head(embeddings[:, [-1], :]).view(batch_size)
-        if targets is not None:
-            loss = F.binary_cross_entropy_with_logits(output, targets)
-        else:
-            output = output.sigmoid()
-            loss = None
-        return output, loss
+        return input_ids[:, len_input:], ''.join(raws)
 
 
 if __name__ == '__main__':
@@ -224,12 +203,3 @@ if __name__ == '__main__':
     loss.backward()
     # idxs = model.generate(fake_input, 20, 1.0, 100)
     # print(idxs.shape, idxs)
-
-    # RelationGPT
-    model = RelationGPT(config).cpu()
-    pred, _ = model(fake_input)
-    print(pred)
-    relation_labels = torch.rand(2)
-    pred, loss = model(fake_input, relation_labels)
-    print(loss)
-    loss.backward()

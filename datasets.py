@@ -99,30 +99,6 @@ class GPTDataset(Dataset):
         return out_x, out_y
 
 
-class RelationGPTDataset(GPTDataset):
-    def __init__(self):
-        super().__init__()
-        self.flag_not_related = self.tokenizer.text_to_ids('[UNK]')[0]
-
-    def __getitem__(self, index):
-        ids = self.get_line_ids(index)
-        if ids[-1] == self.flag_not_related:
-            return torch.LongTensor(ids[:-1]), torch.FloatTensor([0.0])
-        else:
-            return torch.LongTensor(ids), torch.FloatTensor([1.0])
-
-    def collate_fn(self, data):
-        xs, ys = zip(*data)
-        batch_size = len(xs)
-        max_n = 0
-        for b in range(batch_size):
-            if xs[b].shape[0] > max_n: max_n = xs[b].shape[0]
-        out_x = torch.full((batch_size, max_n), 0).long()
-        for b in range(batch_size):
-            out_x[b, :xs[b].shape[0]] = xs[b]
-        return out_x, torch.cat(ys, dim=0)
-
-
 if __name__ == '__main__':
     from configs import gptconfig_nano
     gptconfig_nano.data = './minidata'
