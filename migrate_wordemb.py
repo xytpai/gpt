@@ -6,6 +6,7 @@ from tokenization import Tokenizer
 
 def load_param(args):
     ckpt = torch.load(args.ckpt, map_location='cpu')
+    args.state = ckpt
     ckpt = ckpt['model']
     print(ckpt.keys())
     param = ckpt[args.param]
@@ -20,25 +21,23 @@ def load_tokenizer(args):
 
 def migrate(args, new_tk, old_tk, param):
     new_vocab = new_tk.tokenizer.get_vocab()
+    old_vocab = old_tk.tokenizer.get_vocab()
+
     new_vocab_size, emb_size = len(new_vocab.keys()), param.shape[1]
     new_emb = nn.Embedding(new_vocab_size, emb_size)
+    torch.nn.init.normal_(new_emb.weight, mean=0.0, std=0.02)
     new_emb.weight.requires_grad = False
-    new_emb_w = new_emb.weight
-    old_vocab = old_tk.tokenizer.get_vocab()
+
     count = 0
-    for key in new_vocab.keys():
+    for key, idx in new_vocab.items():
         if old_vocab.get(key, None) is not None:
-            old_idx = old_vocab[key]
-            new_param_k = param[old_idx]
-            new_idx = new_vocab[key]
-            new_emb_w[new_idx] = new_param_k
+            new_emb.weight[idx, :] = param[old_vocab[key], :]
             # print(key + ' ' + str(old_idx) + '->' + str(new_idx))
             count += 1
     print(str(count) + ' migrated')
     print('writting ...')
-    ckpt = torch.load(args.ckpt, map_location='cpu')
-    ckpt['model'][args.param][:] = new_emb_w
-    torch.save(ckpt, args.ckpt + '.new')
+    args.state['model'][args.param][:] = new_emb.weight
+    torch.save(args.state, args.ckpt + '.new')
 
 
 def parse_args():
