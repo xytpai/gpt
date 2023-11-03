@@ -27,6 +27,7 @@ for key, value in ckpt.items():
     new_key = new_key.replace('mlp.dense_4h_to_h.', 'feed_forward.dense_4h_to_h.')
 
     new_key = new_key.replace('transformer.encoder.final_layernorm.', 'final_norm.')
+    new_key = new_key.replace('transformer.output_layer.', 'output_layer.')
 
     print(f'{key} -> {new_key} : {list(value.shape)} {value.dtype}')
     new_ckpt[new_key] = value
