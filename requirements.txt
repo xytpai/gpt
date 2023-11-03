@@ -1,2 +1,3 @@
 addict
 dacite
+sentencepiece
