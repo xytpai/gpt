@@ -6,19 +6,6 @@ from dataclasses import dataclass
 from dacite import from_dict
 
 
-@dataclass
-class GPTConfig:
-    hidden_size: int
-    ffn_hidden_size: int
-    num_attention_heads: int
-    vocab_size: int
-    dropout_prob: float
-    num_layers: int
-    num_query_groups: int
-    ignore_index: int
-    dtype: torch.dtype
-
-
 class AttentionLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -133,9 +120,22 @@ class EmbeddingLayer(nn.Module):
         embeddings = self.word_embeddings(input_ids)
         embeddings = embeddings.transpose(0, 1).contiguous() # -> [s, b, h]
         return embeddings
-    
 
-class GPTLayer(nn.Module):
+
+class GPTModel(nn.Module):
+
+    @dataclass
+    class Config:
+        hidden_size: int
+        ffn_hidden_size: int
+        num_attention_heads: int
+        vocab_size: int
+        dropout_prob: float
+        num_layers: int
+        num_query_groups: int
+        ignore_index: int
+        dtype: torch.dtype
+
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -145,72 +145,74 @@ class GPTLayer(nn.Module):
         self.layers = nn.ModuleList([TransformerLayer(config) for _ in range(config.num_layers)])
         self.final_norm = RMSNormLayer(config)
         self.output_layer = nn.Linear(config.hidden_size, config.vocab_size, bias=False, dtype=config.dtype)
-    
-    def get_word_embeddings_weight(self):
-        word_embeddings_obj = getattr(self, self.word_embeddings_name)
-        return word_embeddings_obj.word_embeddings.weight
 
-    def forward(self, input_ids, attention_mask):
+    def forward(self, input_ids, attention_mask, target_ids=None):
+        # input_ids, target_ids: L[b, t]
         _, seq_length = input_ids.size()
         word_embeddings_obj = getattr(self, self.word_embeddings_name)
-        embeddings = word_embeddings_obj(input_ids) # (t, b, hidden_size)
+        embeddings = word_embeddings_obj(input_ids) # [t, b, hidden_size]
         rope_cache = AttentionLayer.gen_rope_cache(
             seq_length, self.rotary_dim // 2, embeddings.dtype, embeddings.device)
         for layer in self.layers:
             embeddings = layer(embeddings, attention_mask, rope_cache)
         embeddings = self.final_norm(embeddings)
-        embeddings = self.output_layer(embeddings)
-        return embeddings
+        if target_ids is not None:
+            embeddings = self.output_layer(embeddings) # -> F[t, b, vocab_size]
+            loss = F.cross_entropy(embeddings.view(-1, embeddings.size(-1)), 
+                target_ids.transpose(0, 1).contiguous().view(-1), 
+                ignore_index=self.config.ignore_index)
+            return loss
+        else:
+            embeddings = self.output_layer(embeddings[-1, :, :]) # -> F[b, vocab_size]
+            return embeddings 
 
 
 class ChatApplication:
     def __init__(self, model, tokenizer):
         self.model = model
         self.tokenizer = tokenizer
-    
+
     @torch.no_grad()
-    def generate(self, input_ids):
-        out_text = []
-        for i in range(50):
-            output = self.model(input_ids, None)
-            temperature = 1.0
-            output = output[-1, :, :] / temperature
+    def generate(self, input_text, temperature=1.0, max_len=2000):
+        device = self.model.output_layer.weight.device
+        input_ids = self.tokenizer.encode(input_text, bos=True, eos=True)
+        input_ids = torch.LongTensor(input_ids).to(device).view(1, -1)
+        output_text = []
+        for i in range(max_len):
+            output = self.model(input_ids, None, None)
+            output = output / temperature
             idx_next = torch.multinomial(F.softmax(output, dim=-1), num_samples=1) # b
+            idx_next_item = idx_next.item()
+            word_next = self.tokenizer.decode([idx_next_item])
+            print(word_next, end='', flush=True)
+            output_text.append(word_next)
+            if idx_next_item == self.tokenizer.eos_id:
+                break
             input_ids = torch.cat((input_ids, idx_next), dim=1)
-            text =self.tokenizer.decode([idx_next.item()])
-            out_text.append(text)
-            print(text, end='', flush=True)
-        return out_text
-    
+        return "".join(output_text)
+
 
 if __name__ == '__main__':
     from configs import get_gpt_config
     from tokenization import SPTokenizer
 
-    config = from_dict(data_class=GPTConfig, data=get_gpt_config('6b'))
-    model = GPTLayer(config)
+    config = from_dict(data_class=GPTModel.Config, data=get_gpt_config('6b'))
+    model = GPTModel(config)
 
     ckpt = torch.load('weight.ckpt', map_location='cpu')
     missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
     if len(missing_keys) > 0 or len(unexpected_keys) > 0:
         print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
- 
+
     model = model.cuda()
     para = sum([np.prod(list(p.size())) for p in model.parameters()])
     type_size = 1
-    print('Model {} : params: {:4f}B'.format(model._get_name(), para * type_size / 1000 / 1000 / 1000))
     print(config)
     print(model)
+    print('Model {} : params: {:4f}B'.format(model._get_name(), para * type_size / 1000 / 1000 / 1000))
 
-    # fake_input = torch.rand(2, 10) * 100  # batch_size, seq_length
     tokenizer = SPTokenizer('tokenizer.model')
     chatapp = ChatApplication(model, tokenizer)
     input_text = '已知一块钱等于3个馒头，问十二块钱等于什么？'
-    input_ids = tokenizer.encode(input_text, bos=False, eos=False)
-    input_ids = torch.LongTensor(input_ids).view(1, -1).cuda()
-    output = chatapp.generate(input_ids)
+    output = chatapp.generate(input_text)
     print(output)
-
-    # fake_input = fake_input.long().cuda()
-    # pred = model(fake_input, None)
-    # print(pred)
