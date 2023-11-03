@@ -144,21 +144,49 @@ class GPTLayer(nn.Module):
         self.rotary_dim = config.hidden_size // config.num_attention_heads
         self.layers = nn.ModuleList([TransformerLayer(config) for _ in range(config.num_layers)])
         self.final_norm = RMSNormLayer(config)
+        self.output_layer = nn.Linear(config.hidden_size, config.vocab_size, bias=False, dtype=config.dtype)
+    
+    def get_word_embeddings_weight(self):
+        word_embeddings_obj = getattr(self, self.word_embeddings_name)
+        return word_embeddings_obj.word_embeddings.weight
 
     def forward(self, input_ids, attention_mask):
         _, seq_length = input_ids.size()
         word_embeddings_obj = getattr(self, self.word_embeddings_name)
-        embeddings = word_embeddings_obj(input_ids) # (b, t, hidden_size)
+        embeddings = word_embeddings_obj(input_ids) # (t, b, hidden_size)
         rope_cache = AttentionLayer.gen_rope_cache(
             seq_length, self.rotary_dim // 2, embeddings.dtype, embeddings.device)
         for layer in self.layers:
             embeddings = layer(embeddings, attention_mask, rope_cache)
         embeddings = self.final_norm(embeddings)
+        embeddings = self.output_layer(embeddings)
         return embeddings
 
 
+class ChatApplication:
+    def __init__(self, model, tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+    
+    @torch.no_grad()
+    def generate(self, input_ids):
+        out_text = []
+        for i in range(50):
+            output = self.model(input_ids, None)
+            temperature = 1.0
+            output = output[-1, :, :] / temperature
+            idx_next = torch.multinomial(F.softmax(output, dim=-1), num_samples=1) # b
+            input_ids = torch.cat((input_ids, idx_next), dim=1)
+            text =self.tokenizer.decode([idx_next.item()])
+            out_text.append(text)
+            print(text, end='', flush=True)
+        return out_text
+    
+
 if __name__ == '__main__':
     from configs import get_gpt_config
+    from tokenization import SPTokenizer
+
     config = from_dict(data_class=GPTConfig, data=get_gpt_config('6b'))
     model = GPTLayer(config)
 
@@ -174,7 +202,15 @@ if __name__ == '__main__':
     print(config)
     print(model)
 
-    fake_input = torch.rand(2, 10) * 100  # batch_size, seq_length
-    fake_input = fake_input.long().cuda()
-    pred = model(fake_input, None)
-    print(pred)
+    # fake_input = torch.rand(2, 10) * 100  # batch_size, seq_length
+    tokenizer = SPTokenizer('tokenizer.model')
+    chatapp = ChatApplication(model, tokenizer)
+    input_text = '已知一块钱等于3个馒头，问十二块钱等于什么？'
+    input_ids = tokenizer.encode(input_text, bos=False, eos=False)
+    input_ids = torch.LongTensor(input_ids).view(1, -1).cuda()
+    output = chatapp.generate(input_ids)
+    print(output)
+
+    # fake_input = fake_input.long().cuda()
+    # pred = model(fake_input, None)
+    # print(pred)
