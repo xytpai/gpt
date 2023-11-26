@@ -213,6 +213,6 @@ if __name__ == '__main__':
 
     tokenizer = SPTokenizer('tokenizer.model')
     chatapp = ChatApplication(model, tokenizer)
-    input_text = '已知一块钱等于3个馒头，问十二块钱等于什么？'
+    input_text = '北京有什么好玩的地方'
     output = chatapp.generate(input_text)
-    print(output)
+    # print(output)

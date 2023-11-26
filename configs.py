@@ -2,7 +2,7 @@ import torch
 from addict import Dict
 
 
-# 5.977246B
+# 6.243584B
 gpt_config_6b = Dict()
 gpt_config_6b.hidden_size = 4096
 gpt_config_6b.ffn_hidden_size = 13696
