@@ -2,8 +2,31 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+
+import time
 from dataclasses import dataclass
 from dacite import from_dict
+
+
+# torch._inductor.config.coordinate_descent_tuning = True
+# torch._inductor.config.triton_unique_kernel_names = True
+
+
+class KVCache(nn.Module):
+    def __init__(self, max_batch_size, max_seq_length, n_heads, head_size, dtype, device):
+        super().__init__()
+        cache_shape = (max_batch_size, n_heads, max_seq_length, head_size)
+        self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype, device=device))
+        self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype, device=device))
+
+    def update(self, input_pos: int, k_val, v_val):
+        # k_val, v_val: [b, nh, t, hs]
+        k_out = self.k_cache
+        v_out = self.v_cache
+        end = input_pos + k_val.shape[2]
+        k_out[:, :, input_pos:end, :] = k_val
+        v_out[:, :, input_pos:end, :] = v_val
+        return k_out[:, :, :end], v_out[:, :, :end]
 
 
 class AttentionLayer(nn.Module):
@@ -17,6 +40,7 @@ class AttentionLayer(nn.Module):
         qkv_hsize = config.hidden_size + 2 * self.attention_head_size * self.num_query_groups
         self.qkv = nn.Linear(config.hidden_size, qkv_hsize, bias=True, dtype=config.dtype)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False, dtype=config.dtype)
+        self.kv_cache = None
 
     @staticmethod
     def gen_rope_cache(seq_length: int, n_elem: int, 
@@ -30,11 +54,11 @@ class AttentionLayer(nn.Module):
         return cache # -> [seq_length, n_elem, 2]
 
     def apply_rotary_emb(self, x, rope_cache):
-        seq_length, batch_size, num_heads, head_size = x.size()
+        batch_size, seq_length, num_heads, head_size = x.size()
         rot_dim = rope_cache.shape[-2] * 2
         x, x_pass = x[..., :rot_dim], x[..., rot_dim:]
-        xshaped = x.reshape(seq_length, batch_size, num_heads, rot_dim // 2, 2)
-        rope_cache = rope_cache[:seq_length].view(seq_length, 1, 1, xshaped.size(3), 2)
+        xshaped = x.reshape(batch_size, seq_length, num_heads, rot_dim // 2, 2)
+        rope_cache = rope_cache[:seq_length].view(1, seq_length, 1, xshaped.size(3), 2)
         x_out2 = torch.stack(
             [
                 xshaped[..., 0] * rope_cache[..., 0] - xshaped[..., 1] * rope_cache[..., 1],
@@ -45,27 +69,29 @@ class AttentionLayer(nn.Module):
         x_out2 = x_out2.flatten(3)
         return torch.cat((x_out2, x_pass), dim=-1)
 
-    def forward(self, x, attention_mask, rope_cache):
-        seq_length, batch_size, hidden_size = x.size()
+    def forward(self, x, attention_mask, rope_cache, input_pos: int=0):
+        batch_size, seq_length, hidden_size = x.size()
         q, k, v = self.qkv(x).split([
             hidden_size, 
             self.num_query_groups * self.attention_head_size,
             self.num_query_groups * self.attention_head_size], dim=-1)
-        q = q.view(seq_length, batch_size, self.num_attention_heads, self.attention_head_size)
-        k = k.view(seq_length, batch_size, self.num_query_groups, self.attention_head_size)
-        v = v.view(seq_length, batch_size, self.num_query_groups, self.attention_head_size)
+        q = q.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size)
+        k = k.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
+        v = v.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
         if rope_cache is not None:
             q = self.apply_rotary_emb(q, rope_cache)
             k = self.apply_rotary_emb(k, rope_cache)
-        k = k.unsqueeze(-2).expand(-1, -1, -1, self.num_attention_heads // self.num_query_groups, -1)
-        k = k.contiguous().view(seq_length, batch_size, self.num_attention_heads, self.attention_head_size)
-        v = v.unsqueeze(-2).expand(-1, -1, -1, self.num_attention_heads // self.num_query_groups, -1)
-        v = v.contiguous().view(seq_length, batch_size, self.num_attention_heads, self.attention_head_size)
-        q, k, v = [item.permute(1, 2, 0, 3) for item in [q, k, v]] # -> (b, nh, t, hs)
+        q, k, v = [item.transpose(1, 2).contiguous() for item in [q, k, v]] # -> (b, nh, t, hs)
+        # print(q.shape, q.stride())
+        if self.kv_cache is not None:
+            k, v = self.kv_cache.update(input_pos, k, v)
+        k = k.repeat_interleave(self.num_attention_heads // self.num_query_groups, dim=1)
+        v = v.repeat_interleave(self.num_attention_heads // self.num_query_groups, dim=1)
         output = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attention_mask, dropout_p=self.dropout_prob, is_causal=True)
-        output = output.permute(2, 0, 1, 3).contiguous().view(seq_length, batch_size, hidden_size)
-        return self.dense(output)
+            q, k, v, attn_mask=attention_mask, dropout_p=self.dropout_prob, is_causal=(seq_length>1))
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, hidden_size)
+        output = self.dense(output)
+        return output
 
 
 class FeedForwardLayer(nn.Module):
@@ -104,8 +130,8 @@ class TransformerLayer(nn.Module):
         self.input_norm = RMSNormLayer(config)
         self.post_attention_norm = RMSNormLayer(config)
 
-    def forward(self, x, attention_mask, rope_cache):
-        h = x + self.attention(self.input_norm(x), attention_mask, rope_cache)
+    def forward(self, x, attention_mask, rope_cache, input_pos: int=0):
+        h = x + self.attention(self.input_norm(x), attention_mask, rope_cache, input_pos)
         out = h + self.feed_forward(self.post_attention_norm(h))
         return out
 
@@ -118,7 +144,6 @@ class EmbeddingLayer(nn.Module):
 
     def forward(self, input_ids):
         embeddings = self.word_embeddings(input_ids)
-        embeddings = embeddings.transpose(0, 1).contiguous() # -> [s, b, h]
         return embeddings
 
 
@@ -145,50 +170,99 @@ class GPTModel(nn.Module):
         self.layers = nn.ModuleList([TransformerLayer(config) for _ in range(config.num_layers)])
         self.final_norm = RMSNormLayer(config)
         self.output_layer = nn.Linear(config.hidden_size, config.vocab_size, bias=False, dtype=config.dtype)
+    
+    def device(self):
+        return self.output_layer.weight.device
+    
+    def dtype(self):
+        return self.config.dtype
+    
+    def assign_kv_cache(self, max_batch_size, max_seq_length):
+        for layer in self.layers:
+            layer.attention.kv_cache = KVCache(
+                max_batch_size, max_seq_length, self.config.num_query_groups, 
+                self.config.hidden_size // self.config.num_attention_heads,
+                self.dtype(), self.device())
+    
+    def gen_rope_cache(self, max_seq_length):
+        rope_cache = AttentionLayer.gen_rope_cache(
+            max_seq_length, self.rotary_dim // 2, self.dtype(), self.device())
+        return rope_cache
 
-    def forward(self, input_ids, attention_mask, target_ids=None):
-        # input_ids, target_ids: L[b, t]
+    def forward(self, rope_cache, input_ids, input_pos: int=0):
+        # input_ids: L[b, t]
         _, seq_length = input_ids.size()
         word_embeddings_obj = getattr(self, self.word_embeddings_name)
-        embeddings = word_embeddings_obj(input_ids) # [t, b, hidden_size]
-        rope_cache = AttentionLayer.gen_rope_cache(
-            seq_length, self.rotary_dim // 2, embeddings.dtype, embeddings.device)
+        embeddings = word_embeddings_obj(input_ids) # [b, t, hidden_size]
+        rope_cache = rope_cache[input_pos:]
+        
         for layer in self.layers:
-            embeddings = layer(embeddings, attention_mask, rope_cache)
+            embeddings = layer(embeddings, None, rope_cache, input_pos)
         embeddings = self.final_norm(embeddings)
-        if target_ids is not None:
-            embeddings = self.output_layer(embeddings) # -> F[t, b, vocab_size]
-            loss = F.cross_entropy(embeddings.view(-1, embeddings.size(-1)), 
-                target_ids.transpose(0, 1).contiguous().view(-1), 
-                ignore_index=self.config.ignore_index)
-            return loss
-        else:
-            embeddings = self.output_layer(embeddings[-1, :, :]) # -> F[b, vocab_size]
-            return embeddings 
+        return embeddings
+
+    def post_loss(self, embeddings, target_ids):
+        embeddings = self.output_layer(embeddings) # -> F[b, t, vocab_size]
+        loss = F.cross_entropy(embeddings.view(-1, embeddings.size(-1)), 
+            target_ids.contiguous().view(-1), 
+            ignore_index=self.config.ignore_index)
+        return loss
+
+    def post_pred(self, embeddings):
+        embeddings = self.output_layer(embeddings[:, -1, :]) # -> F[b, vocab_size]
+        return embeddings
 
 
 class ChatApplication:
-    def __init__(self, model, tokenizer):
-        self.model = model
+    def __init__(self, model, tokenizer, compile=True):
+        if not compile:
+            self.model = model
+        else:
+            '''
+  File "/tmp/torchinductor_xytpai/jx/cjxhaaobiiwit5hrsx6y5ygwxpm3obfrt46xw5srhd2vlq2ctiek.py", line 1400, in call
+    buf17 = aten._scaled_dot_product_efficient_attention(reinterpret_tensor(buf8, (1, 32, 1, 128), (4096, 128, 1, 1), 0), reinterpret_tensor(buf15, (1, 32, 7, 128), (0, 896, 128, 1), 0), reinterpret_tensor(buf16, (1, 32, 7, 128), (0, 896, 128, 1), 0), None, False)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/xytpai/miniconda3/envs/xyt/lib/python3.11/site-packages/torch/_ops.py", line 692, in __call__
+    return self._op(*args, **kwargs or {})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  RuntimeError: query is not correctly aligned (strideM)
+            '''
+            self.model = torch.compile(model)
         self.tokenizer = tokenizer
 
     @torch.no_grad()
     def generate(self, input_text, temperature=1.0, max_len=2000):
-        device = self.model.output_layer.weight.device
+        self.model.assign_kv_cache(1, 2048)
+        rope_cache = self.model.gen_rope_cache(2048)
         input_ids = self.tokenizer.encode(input_text, bos=True, eos=True)
-        input_ids = torch.LongTensor(input_ids).to(device).view(1, -1)
+        input_ids = torch.LongTensor(input_ids).to(self.model.device()).view(1, -1)
+        input_pos = 0
         output_text = []
+        latency = []
         for i in range(max_len):
-            output = self.model(input_ids, None, None)
+            torch.cuda.synchronize()
+            start = time.time()
+            embeddings = self.model(rope_cache, input_ids, input_pos)
+            output = self.model.post_pred(embeddings)
+            torch.cuda.synchronize()
+            end = time.time()
+            dur = (end - start)
+            latency.append(dur)
             output = output / temperature
             idx_next = torch.multinomial(F.softmax(output, dim=-1), num_samples=1) # b
-            idx_next_item = idx_next.item()
+            idx_next_item = idx_next[:, -1].item()
             word_next = self.tokenizer.decode([idx_next_item])
             print(word_next, end='', flush=True)
             output_text.append(word_next)
             if idx_next_item == self.tokenizer.eos_id:
                 break
-            input_ids = torch.cat((input_ids, idx_next), dim=1)
+            input_pos += input_ids.shape[1]
+            input_ids = idx_next
+        
+        latency = latency[10:]
+        token_per_s = 1.0 / (sum(latency) / len(latency))
+        print(f'\ntoken_per_s:{token_per_s}')
+
         return "".join(output_text)
 
 
@@ -213,6 +287,6 @@ if __name__ == '__main__':
 
     tokenizer = SPTokenizer('tokenizer.model')
     chatapp = ChatApplication(model, tokenizer)
-    input_text = '北京有什么好玩的地方'
+    input_text = "北京有什么好玩的地方"
     output = chatapp.generate(input_text)
     # print(output)
