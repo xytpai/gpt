@@ -13,6 +13,7 @@ gpt_config_6b.num_layers = 28
 gpt_config_6b.num_query_groups = 2
 gpt_config_6b.ignore_index = -1
 gpt_config_6b.dtype = torch.float16
+gpt_config_6b.max_seq_length = 2048
 
 
 def get_gpt_config(name):
