@@ -36,8 +36,10 @@ class AttentionLayer(nn.Module):
         self.num_attention_heads = config.num_attention_heads
         self.attention_head_size = config.hidden_size // config.num_attention_heads
         self.num_query_groups = config.num_query_groups
-        qkv_hsize = config.hidden_size + 2 * self.attention_head_size * self.num_query_groups
-        self.qkv = nn.Linear(config.hidden_size, qkv_hsize, bias=True, dtype=config.dtype)
+        self.query = nn.Linear(config.hidden_size, config.hidden_size, bias=True, dtype=config.dtype)
+        kv_size = self.attention_head_size * self.num_query_groups
+        self.key = nn.Linear(config.hidden_size, kv_size, bias=True, dtype=config.dtype)
+        self.value = nn.Linear(config.hidden_size, kv_size, bias=True, dtype=config.dtype)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False, dtype=config.dtype)
         self.kv_cache = None
 
@@ -68,12 +70,11 @@ class AttentionLayer(nn.Module):
         x_out2 = x_out2.flatten(3)
         return torch.cat((x_out2, x_pass), dim=-1)
 
-    def forward(self, x, attention_mask, rope_cache, input_pos: Optional[Tensor]=None):
+    def forward(self, x, attention_mask, rope_cache, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
         batch_size, seq_length, hidden_size = x.size()
-        q, k, v = self.qkv(x).split([
-            hidden_size, 
-            self.num_query_groups * self.attention_head_size,
-            self.num_query_groups * self.attention_head_size], dim=-1)
+        q = self.query(x)
+        k = self.key(x if xa is None else xa)
+        v = self.value(x if xa is None else xa)
         q = q.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size)
         k = k.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
         v = v.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
@@ -125,13 +126,29 @@ class TransformerLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.attention = AttentionLayer(config)
+        if config.enable_visual:
+            self.visual_attention = AttentionLayer(config)
+            self.visual_norm = RMSNormLayer(config)
+            self.enable_visual = True
+        else:
+            self.enable_visual = False
+        if config.enable_audio:
+            self.audio_attention = AttentionLayer(config)
+            self.audio_norm = RMSNormLayer(config)
+            self.enable_audio = True
+        else:
+            self.enable_audio = False
         self.feed_forward = FeedForwardLayer(config)
         self.input_norm = RMSNormLayer(config)
         self.post_attention_norm = RMSNormLayer(config)
 
-    def forward(self, x, attention_mask, rope_cache, input_pos: Optional[Tensor]=None):
-        h = x + self.attention(self.input_norm(x), attention_mask, rope_cache, input_pos)
-        out = h + self.feed_forward(self.post_attention_norm(h))
+    def forward(self, x, attention_mask, rope_cache, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
+        x = x + self.attention(self.input_norm(x), attention_mask, rope_cache, input_pos)
+        if self.enable_visual:
+            x = x + self.visual_attention(self.visual_norm(x), attention_mask, rope_cache, input_pos, xa)
+        if self.enable_audio:
+            x = x + self.audio_attention(self.audio_norm(x), attention_mask, rope_cache, input_pos, xa)
+        out = x + self.feed_forward(self.post_attention_norm(x))
         return out
 
 
@@ -146,7 +163,7 @@ class EmbeddingLayer(nn.Module):
         return embeddings
 
 
-class GPTModel(nn.Module):
+class GPTXModel(nn.Module):
 
     @dataclass
     class Config:
@@ -160,6 +177,8 @@ class GPTModel(nn.Module):
         ignore_index: int
         dtype: torch.dtype
         max_seq_length: int
+        enable_visual: bool
+        enable_audio: bool
 
     def __init__(self, config):
         super().__init__()
@@ -195,8 +214,10 @@ class GPTModel(nn.Module):
             self.max_seq_length, self.rotary_dim // 2, self.dtype(), self.device())
         return rope_cache
 
-    def forward(self, rope_cache, input_ids, input_pos: Optional[Tensor]=None):
+    def forward(self, rope_cache, input_ids, input_pos: Optional[Tensor]=None, 
+        images: Optional[Tensor]=None):
         # input_ids: L[b, t]
+        # images: F[b, c, h, w]
         _, seq_length = input_ids.size()
         word_embeddings_obj = getattr(self, self.word_embeddings_name)
         embeddings = word_embeddings_obj(input_ids) # [b, t, hidden_size]
@@ -268,24 +289,27 @@ class ChatApplication:
 
 
 if __name__ == '__main__':
+    import sys
     from configs import get_gpt_config
     from tokenization import SPTokenizer
 
-    config = from_dict(data_class=GPTModel.Config, data=get_gpt_config('6b'))
-    model = GPTModel(config)
+    wpath = sys.argv[1]
+    input_text = sys.argv[2] # "写一篇一万字短片科幻小说，要求讲述人类探索亚空间的故事"
 
-    ckpt = torch.load('weight.ckpt', map_location='cpu')
+    config = from_dict(data_class=GPTXModel.Config, data=get_gpt_config('6b'))
+    print(config)
+    model = GPTXModel(config)
+
+    ckpt = torch.load(wpath, map_location='cpu')
     missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
     if len(missing_keys) > 0 or len(unexpected_keys) > 0:
         print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
 
     model = model.cuda()
     type_size = 1
-    print(config)
     print(model)
     print('Model {} : params: {:4f}B'.format(model._get_name(), model.size() * type_size / 1000 / 1000 / 1000))
 
     tokenizer = SPTokenizer('tokenizer.model')
     chatapp = ChatApplication(model, tokenizer)
-    input_text = "世界上最深的海在哪?"
     output = chatapp.generate(input_text)
