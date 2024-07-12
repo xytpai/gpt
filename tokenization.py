@@ -34,7 +34,10 @@ class SPTokenizer:
             t = t + [self.eos_id]
         return t
 
-    def decode(self, t: List[int]) -> str:
+    def decode(self, t: List[int], rm_eos_bos: bool=False) -> str:
+        t = [x for x in t if x >= 0]
+        if rm_eos_bos:
+            t = [x for x in t if (x != self.bos_id and x != self.eos_id)]
         text, buffer = "", []
         for token in t:
             if token in self.index_special_tokens:

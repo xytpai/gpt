@@ -1,3 +1,7 @@
+six
 addict
+tqdm
+tensorboard
 dacite
 sentencepiece
+packaging
