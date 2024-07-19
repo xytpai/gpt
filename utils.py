@@ -275,7 +275,7 @@ class TrainingScheduler(object):
                  save_interval: int,
                  gradient_accumulation_steps: int,
                  grad_clip: float=0.0,
-                 weight_decay_blacklist: tuple=tuple()):
+                 weight_decay_blacklist: tuple=(torch.nn.Embedding, )):
         self.model = model
         self.checkpoints_dir = checkpoints_dir
         self.fname_prefix = fname_prefix
@@ -317,7 +317,7 @@ class TrainingScheduler(object):
             self.tensorboard = SummaryWriter('summary')
             self.count_for_save = 0
 
-    def __del__(self):
+    def delete(self):
         if self.rank == 0:
             self.tensorboard.close()
             self.pbar.close()

@@ -28,11 +28,10 @@ def parse_args():
     parser.add_argument('--gradient_accumulation_steps', type=int, default=32)
     parser.add_argument('--load', type=str, default='')
     parser.add_argument('--half', action='store_true')
-    parser.add_argument('--freeze_patterns', type=str, default='[]')
     args = parser.parse_args()
     new_args = get_gpt_config(args.level)
     new_args.update(vars(args))
-    new_args.freeze_patterns = eval(new_args.freeze_patterns)
+    new_args.freeze_patterns = ['layers']
     return new_args
 
 
@@ -55,7 +54,7 @@ def get_scheduler(args):
         args.save_interval,
         args.gradient_accumulation_steps,
         args.grad_clip,
-        weight_decay_blacklist=(torch.nn.Embedding, torch.nn, RMSNormLayer)
+        weight_decay_blacklist=(torch.nn.Embedding, RMSNormLayer)
         )
     return training_scheduler
 
@@ -67,6 +66,7 @@ def main(rank, args, world_size):
         while True:
             if training_scheduler.step_epoch():
                 break
+        training_scheduler.delete()
         if rank == 0:
             print('Training procedure finished!')
 

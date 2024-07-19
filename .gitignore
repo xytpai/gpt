@@ -145,6 +145,6 @@ out_*
 old_*
 test_*
 # vocab.json
-checkpoints/*
+checkpoints/*.ckpt
 .datacache
 *.ckpt
