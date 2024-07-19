@@ -1,5 +1,5 @@
+# base
 import os
-import sys
 import math
 import random
 from tqdm import tqdm
@@ -10,8 +10,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
 
-# ddp
-import torch.multiprocessing as mp
+# pytorch ddp
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group, all_reduce, ReduceOp
@@ -22,6 +21,47 @@ os.environ['MASTER_PORT'] = '12355'
 
 
 class ModelLoader(object):
+    '''
+    [ Introduction ]
+    This class is used for the unified management of loading and storing model checkpoints.
+
+    [ Arguments ]
+    - model: torch.nn model for loading.
+    - checkpoints_dir: Folder for storing checkpoints.
+        For example:
+        ./checkpoints
+            ${fname_prefix}_0000001.ckpt (0000001 is the training step)
+            ${fname_prefix}_0000002.ckpt
+    - fname_prefix: See above.
+    - max_checkpoints: The maximum number of checkpoint files to retain.
+
+    [ Methods ]
+    - load
+        Search for .ckpt files in the checkpoints_dir that meet the prefix requirements, 
+        sort them by the filename suffix (denoting step), 
+        and load the state dict of the file with the largest step into the model.        
+
+        - to_half: Whether the model needs to be converted to half-precision before loading the checkpoint.
+        - no_checkpoint: If set to True, the model will not load the checkpoint.
+        - no_ddp: If set to True, the model will not use ddp.
+        - to_cuda: If set to False, the model will not copy to cuda after loading the checkpoint.
+        - rank: Specify the device id when to_cuda is set to True.
+        - freeze_patterns: A list specifying the patterns for freezing parameters, such as: ['attention', 'mlp'].
+
+    - store
+        Store the current model parameters to a new checkpoint file, using the step as the filename suffix. 
+        It may delete the file with the smallest step to ensure that there are at most max_checkpoints files.
+        If checkpoints_dir does not exist, it will be created.
+
+        - step: Mainly used for the filename suffix. (${fname_prefix}_${padded_step}.ckpt)
+        - additional_dict: Additional state dict to be added.
+    
+    - model
+        Return the self.model
+    
+    - ckpt
+        Return the self.ckpt
+    '''
     def __init__(self, 
                  model, 
                  checkpoints_dir: str, 
@@ -44,12 +84,6 @@ class ModelLoader(object):
         return int(fname.strip().split('_')[-1].replace('.ckpt', ''))
     
     def __load_checkpoint(self):
-        '''
-        checkpoints_dir example:
-            ./checkpoints
-                prefix_0000001.ckpt
-                prefix_0000002.ckpt
-        '''
         files = []
         for path, _, file_list in os.walk(self.checkpoints_dir):
             for file in file_list:
@@ -92,7 +126,7 @@ class ModelLoader(object):
             self.model = self.model.half()
         if not self.no_checkpoint:
             self.__load_checkpoint()
-        self.__freeze_layers(freeze_patterns)
+        self.__freeze_layers(self.freeze_patterns)
         if to_cuda:
             self.model = self.model.cuda(self.rank)
         if not no_ddp:
@@ -125,77 +159,108 @@ class ModelLoader(object):
         }
         state_dict.update(additional_dict)
         torch.save(state_dict, ckpt_filename)
+    
+    def model(self):
+        return self.model
+    
+    def ckpt(self):
+        return self.ckpt
 
 
-def prepare_device(rank, world_size, seed):
-    print('launch rank:' + str(rank))
-    torch.cuda.set_device(rank)
-    seed = seed + rank
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    init_process_group(backend='nccl', rank=rank, world_size=world_size)
-
-
-def prepare_dataloader(dataset, batch_size):
-    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, pin_memory=True,
-        shuffle=False, collate_fn=dataset.collate_fn, sampler=DistributedSampler(dataset, shuffle=False))
-    return loader
-
-
-def prepare_optimizer(model, lr_base, weight_decay, whitelist_weight_modules, blacklist_weight_modules):
-    decay = set()
-    no_decay = set()
-    for mn, m in model.named_modules():
-        for pn, p in m.named_parameters():
-            full_param_name = '%s.%s' % (mn, pn) if mn else pn
-            if pn.endswith('bias'):
-                no_decay.add(full_param_name)
-            elif pn.endswith('weight') and isinstance(m, whitelist_weight_modules):
-                decay.add(full_param_name)
-            elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
-                no_decay.add(full_param_name)
-    param_dict = {pn: p for pn, p in model.named_parameters()}
-    inter_params = decay & no_decay
-    union_params = decay | no_decay
-    assert len(inter_params) == 0
-    assert len(param_dict.keys() - union_params) == 0
-    optim_groups = [
-        {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": weight_decay},
-        {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
-    ]
-    opt = torch.optim.AdamW(optim_groups, lr=lr_base, betas=(0.9, 0.95))
-    return opt
-
-
-def prepare_lr_scheduler(end_step, batch_size, lr_base, lr_min, opt, ckpt):
-    training_steps = float(end_step / batch_size)
-    warmup_steps = 2000
-    lr_decay_steps = training_steps
-    lr_min = float(lr_min)
-    lr_base = float(lr_base)
-    def lr_lambda(step):
-        if step < warmup_steps:
-            return float(max(1.0, step) / warmup_steps)
-        elif step > lr_decay_steps:
-            return lr_min / lr_base
-        else:
-            decay_ratio = (step - warmup_steps) / (lr_decay_steps - warmup_steps)
-            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
-            return (lr_min + coeff * (lr_base - lr_min)) / lr_base
-    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
-    lr_sd = ckpt.get('lr_scheduler', None)
-    if lr_sd is not None:
-        lr_scheduler.load_state_dict(lr_sd)
-    return lr_scheduler
+class DDPContext(object):
+    '''
+    [ Introduction ]
+    Initialize the current GPU and set the seed.
+    '''
+    def __init__(self, rank, world_size, seed, backend='nccl'):
+        self.rank = rank
+        self.world_size = world_size
+        self.seed = seed
+        self.backend = backend
+    
+    def __enter__(self):
+        print('launch rank:' + str(self.rank))
+        torch.cuda.set_device(self.rank)
+        seed = self.seed + self.rank
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        init_process_group(backend=self.backend, rank=self.rank, world_size=self.world_size)
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        destroy_process_group()
 
 
 class TrainingScheduler(object):
+
+    @staticmethod
+    def prepare_dataloader(dataset, batch_size):
+        # Always in ddp
+        loader = torch.utils.data.DataLoader(
+            dataset, 
+            batch_size=batch_size, 
+            pin_memory=True,
+            shuffle=False, 
+            collate_fn=dataset.collate_fn, 
+            sampler=DistributedSampler(dataset, shuffle=False))
+        return loader
+
+    @staticmethod
+    def prepare_optimizer(
+        model, 
+        lr_base, 
+        weight_decay, 
+        weight_decay_whitelist=(torch.nn.Linear, ), 
+        weight_decay_blacklist=(torch.nn.Embedding, )):
+        # AdamW optimizer
+        decay = set()
+        no_decay = set()
+        for mn, m in model.named_modules():
+            for pn, p in m.named_parameters():
+                full_param_name = '%s.%s' % (mn, pn) if mn else pn
+                if pn.endswith('bias'):
+                    no_decay.add(full_param_name)
+                elif pn.endswith('weight') and isinstance(m, weight_decay_whitelist):
+                    decay.add(full_param_name)
+                elif pn.endswith('weight') and isinstance(m, weight_decay_blacklist):
+                    no_decay.add(full_param_name)
+        param_dict = {pn: p for pn, p in model.named_parameters()}
+        inter_params = decay & no_decay
+        union_params = decay | no_decay
+        assert len(inter_params) == 0
+        assert len(param_dict.keys() - union_params) == 0
+        optim_groups = [
+            {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": weight_decay},
+            {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
+        ]
+        opt = torch.optim.AdamW(optim_groups, lr=lr_base, betas=(0.9, 0.95))
+        return opt
+
+    @staticmethod
+    def prepare_lr_scheduler(end_step, batch_size, lr_base, lr_min, opt, ckpt):
+        # LambdaLR
+        training_steps = float(end_step / batch_size)
+        warmup_steps = 2000
+        lr_decay_steps = training_steps
+        lr_min = float(lr_min)
+        lr_base = float(lr_base)
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return float(max(1.0, step) / warmup_steps)
+            elif step > lr_decay_steps:
+                return lr_min / lr_base
+            else:
+                decay_ratio = (step - warmup_steps) / (lr_decay_steps - warmup_steps)
+                coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+                return (lr_min + coeff * (lr_base - lr_min)) / lr_base
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
+        lr_sd = ckpt.get('lr_scheduler', None)
+        if lr_sd is not None:
+            lr_scheduler.load_state_dict(lr_sd)
+        return lr_scheduler
+
     def __init__(self, 
-                 rank: int,
-                 world_size: int,
-                 seed: int,
                  model,
                  checkpoints_dir: str,
                  fname_prefix: str,
@@ -209,22 +274,37 @@ class TrainingScheduler(object):
                  lr_min: float,
                  save_interval: int,
                  gradient_accumulation_steps: int,
-                 grad_clip: float = 0.0):
-        prepare_device(rank, world_size, seed)
-        self.modelloader = ModelLoader(model, checkpoints_dir, fname_prefix, max_checkpoints)
-        self.modelloader.load(rank=rank, freeze_patterns=freeze_patterns)
-        self.dataloader = prepare_dataloader(dataset, batch_size)
-        self.opt = prepare_optimizer(self.modelloader.model, lr_base, weight_decay)
-        self.lr_scheduler = prepare_lr_scheduler(
-            estimated_end_step, batch_size, lr_base, lr_min, self.opt, self.modelloader.ckpt)
-        self.step = int(self.modelloader.ckpt['step'])
-        self.rank = rank
+                 grad_clip: float=0.0,
+                 weight_decay_blacklist: tuple=tuple()):
+        self.model = model
+        self.checkpoints_dir = checkpoints_dir
+        self.fname_prefix = fname_prefix
+        self.max_checkpoints = max_checkpoints
+        self.freeze_patterns = freeze_patterns
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.lr_base = lr_base
+        self.weight_decay = weight_decay
         self.estimated_end_step = estimated_end_step
+        self.lr_min = lr_min
         self.save_interval = save_interval
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         self.grad_clip = grad_clip
+        self.weight_decay_blacklist = weight_decay_blacklist
+    
+    def initialize(self, rank: int, world_size: int):
+        self.rank = rank
+        self.world_size = world_size
+        self.modelloader = ModelLoader(self.model, self.checkpoints_dir, self.fname_prefix, self.max_checkpoints)
+        self.modelloader.load(rank=self.rank, freeze_patterns=self.freeze_patterns)
+        self.dataloader = self.prepare_dataloader(self.dataset, self.batch_size)
+        self.opt = self.prepare_optimizer(self.modelloader.model, self.lr_base, self.weight_decay,
+                                          weight_decay_blacklist=self.weight_decay_blacklist)
+        self.lr_scheduler = self.prepare_lr_scheduler(
+            self.estimated_end_step, self.batch_size, self.lr_base, self.lr_min, self.opt, self.modelloader.ckpt)
+        self.step = int(self.modelloader.ckpt['step'])
         # grad acc
         self.grad_acc_count = 0
-        self.gradient_accumulation_steps = gradient_accumulation_steps
         # scaler
         self.scaler = GradScaler()
         # system
@@ -241,7 +321,7 @@ class TrainingScheduler(object):
         if self.rank == 0:
             self.tensorboard.close()
             self.pbar.close()
-    
+        
     def __step_system(self, reduced_loss):
         is_end = False
         self.step += 1
@@ -292,4 +372,6 @@ class TrainingScheduler(object):
             all_reduce(loss_t, op=ReduceOp.SUM)
             reduced_loss = float(loss_t[0].item()) / self.args.world_size
             is_end = self.__step_system(reduced_loss)
-            return is_end
+            if is_end:
+                return True
+        return False

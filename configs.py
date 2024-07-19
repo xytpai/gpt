@@ -18,7 +18,7 @@ gpt_config_6b.enable_visual = False
 gpt_config_6b.enable_audio = False
 
 
-def get_gpt_config(name):
-    if name == '6b':
+def get_gpt_config(level):
+    if level == '6b':
         return gpt_config_6b
-    raise KeyError(f"Config {name} not found")
+    raise KeyError(f"Config {level} not found")
