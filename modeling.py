@@ -31,16 +31,15 @@ class KVCache(nn.Module):
 class AttentionLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
-        assert config.hidden_size % config.num_attention_heads == 0
         self.dropout_prob = config.dropout_prob
         self.num_attention_heads = config.num_attention_heads
-        self.attention_head_size = config.hidden_size // config.num_attention_heads
-        self.num_query_groups = config.num_query_groups
-        self.query = nn.Linear(config.hidden_size, config.hidden_size, bias=True, dtype=config.dtype)
-        kv_size = self.attention_head_size * self.num_query_groups
-        self.key = nn.Linear(config.hidden_size, kv_size, bias=True, dtype=config.dtype)
-        self.value = nn.Linear(config.hidden_size, kv_size, bias=True, dtype=config.dtype)
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False, dtype=config.dtype)
+        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+        self.query = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=True, dtype=config.dtype)
+        self.key = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True, dtype=config.dtype)
+        self.value = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True, dtype=config.dtype)
+        self.dense = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False, dtype=config.dtype)
         self.kv_cache = None
 
     @staticmethod
@@ -75,18 +74,17 @@ class AttentionLayer(nn.Module):
         q = self.query(x)
         k = self.key(x if xa is None else xa)
         v = self.value(x if xa is None else xa)
-        q = q.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size)
-        k = k.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
-        v = v.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
+        q = q.view(batch_size, seq_length, self.num_attention_heads, self.head_dim)
+        k = k.view(batch_size, seq_length, self.num_key_value_heads, self.head_dim)
+        v = v.view(batch_size, seq_length, self.num_key_value_heads, self.head_dim)
         if rope_cache is not None:
             q = self.apply_rotary_emb(q, rope_cache)
             k = self.apply_rotary_emb(k, rope_cache)
-        q, k, v = [item.transpose(1, 2).contiguous() for item in [q, k, v]] # -> (b, nh, t, hs)
-        # print(q.shape, q.stride())
+        q, k, v = [item.transpose(1, 2) for item in [q, k, v]] # -> (b, nh, t, hs)
         if self.kv_cache is not None:
             k, v = self.kv_cache.update(input_pos, k, v)
-        k = k.repeat_interleave(self.num_attention_heads // self.num_query_groups, dim=1)
-        v = v.repeat_interleave(self.num_attention_heads // self.num_query_groups, dim=1)
+        k = k.repeat_interleave(self.num_key_value_groups, dim=1)
+        v = v.repeat_interleave(self.num_key_value_groups, dim=1)
         output = F.scaled_dot_product_attention(
             q, k, v, attn_mask=attention_mask, dropout_p=self.dropout_prob)
         output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, hidden_size)
@@ -173,7 +171,7 @@ class GPTXModel(nn.Module):
         vocab_size: int
         dropout_prob: float
         num_layers: int
-        num_query_groups: int
+        num_key_value_heads: int
         ignore_index: int
         dtype: torch.dtype
         max_seq_length: int
@@ -205,7 +203,7 @@ class GPTXModel(nn.Module):
     def assign_kv_cache(self, max_batch_size):
         for layer in self.layers:
             layer.attention.kv_cache = KVCache(
-                max_batch_size, self.max_seq_length, self.config.num_query_groups, 
+                max_batch_size, self.max_seq_length, self.config.num_key_value_heads,
                 self.config.hidden_size // self.config.num_attention_heads,
                 self.dtype(), self.device())
     
