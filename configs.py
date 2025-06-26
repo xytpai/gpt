@@ -10,12 +10,14 @@ gpt_config_6b.num_attention_heads = 32
 gpt_config_6b.vocab_size = 65024
 gpt_config_6b.dropout_prob = 0.0
 gpt_config_6b.num_layers = 28
-gpt_config_6b.num_key_value_heads = 2
+gpt_config_6b.num_query_groups = 2
 gpt_config_6b.ignore_index = -1
 gpt_config_6b.dtype = torch.float16
-gpt_config_6b.max_seq_length = 2048
+gpt_config_6b.max_seq_length = 1024
 gpt_config_6b.enable_visual = False
 gpt_config_6b.enable_audio = False
+gpt_config_6b.lora_rank = 64
+gpt_config_6b.lora_alpha = 0.5
 
 
 def get_gpt_config(level):

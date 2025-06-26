@@ -11,6 +11,20 @@ from typing import Optional
 from torch import Tensor
 
 
+class LoRALayer(nn.Module):
+    def __init__(self, in_dim, out_dim, rank, alpha):
+        super().__init__()
+        std_dev = 1 / torch.sqrt(torch.tensor(rank).float())
+        self.a_weight = nn.Parameter(torch.randn(in_dim, rank) * std_dev)
+        self.b_weight = nn.Parameter(torch.zeros(rank, out_dim))
+        self.alpha = alpha
+    
+    def forward(self, x):
+        dtype = x.dtype
+        x = self.alpha * (x.float() @ self.a_weight @ self.b_weight)
+        return x.to(dtype)
+
+
 class KVCache(nn.Module):
     def __init__(self, max_batch_size, max_seq_length, n_heads, head_size, dtype, device):
         super().__init__()
@@ -31,16 +45,22 @@ class KVCache(nn.Module):
 class AttentionLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
+        assert config.hidden_size % config.num_attention_heads == 0
         self.dropout_prob = config.dropout_prob
         self.num_attention_heads = config.num_attention_heads
-        self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        self.num_key_value_heads = config.num_key_value_heads
-        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.query = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=True, dtype=config.dtype)
-        self.key = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True, dtype=config.dtype)
-        self.value = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=True, dtype=config.dtype)
-        self.dense = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False, dtype=config.dtype)
+        self.attention_head_size = config.hidden_size // config.num_attention_heads
+        self.num_query_groups = config.num_query_groups
+        self.query = nn.Linear(config.hidden_size, config.hidden_size, bias=True, dtype=config.dtype)
+        kv_size = self.attention_head_size * self.num_query_groups
+        self.key = nn.Linear(config.hidden_size, kv_size, bias=True, dtype=config.dtype)
+        self.value = nn.Linear(config.hidden_size, kv_size, bias=True, dtype=config.dtype)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False, dtype=config.dtype)
         self.kv_cache = None
+        # lora
+        self.query_lora = LoRALayer(config.hidden_size, config.hidden_size, config.lora_rank, config.lora_alpha)
+        self.key_lora = LoRALayer(config.hidden_size, kv_size, config.lora_rank, config.lora_alpha)
+        self.value_lora = LoRALayer(config.hidden_size, kv_size, config.lora_rank, config.lora_alpha)
+        self.dense_lora = LoRALayer(config.hidden_size, config.hidden_size, config.lora_rank, config.lora_alpha)
 
     @staticmethod
     def gen_rope_cache(max_seq_length: int, n_elem: int, 
@@ -71,24 +91,25 @@ class AttentionLayer(nn.Module):
 
     def forward(self, x, attention_mask, rope_cache, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
         batch_size, seq_length, hidden_size = x.size()
-        q = self.query(x)
-        k = self.key(x if xa is None else xa)
-        v = self.value(x if xa is None else xa)
-        q = q.view(batch_size, seq_length, self.num_attention_heads, self.head_dim)
-        k = k.view(batch_size, seq_length, self.num_key_value_heads, self.head_dim)
-        v = v.view(batch_size, seq_length, self.num_key_value_heads, self.head_dim)
+        q = self.query(x) + self.query_lora(x)
+        x_for_kv = x if xa is None else xa
+        k = self.key(x_for_kv) + self.key_lora(x_for_kv)
+        v = self.value(x_for_kv) + self.value_lora(x_for_kv)
+        q = q.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size)
+        k = k.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
+        v = v.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
         if rope_cache is not None:
             q = self.apply_rotary_emb(q, rope_cache)
             k = self.apply_rotary_emb(k, rope_cache)
-        q, k, v = [item.transpose(1, 2) for item in [q, k, v]] # -> (b, nh, t, hs)
+        q, k, v = [item.transpose(1, 2).contiguous() for item in [q, k, v]] # -> (b, nh, t, hs)
         if self.kv_cache is not None:
             k, v = self.kv_cache.update(input_pos, k, v)
-        k = k.repeat_interleave(self.num_key_value_groups, dim=1)
-        v = v.repeat_interleave(self.num_key_value_groups, dim=1)
+        k = k.repeat_interleave(self.num_attention_heads // self.num_query_groups, dim=1)
+        v = v.repeat_interleave(self.num_attention_heads // self.num_query_groups, dim=1)
         output = F.scaled_dot_product_attention(
             q, k, v, attn_mask=attention_mask, dropout_p=self.dropout_prob)
         output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, hidden_size)
-        output = self.dense(output)
+        output = self.dense(output) + self.dense_lora(output)
         return output
 
 
@@ -171,12 +192,14 @@ class GPTXModel(nn.Module):
         vocab_size: int
         dropout_prob: float
         num_layers: int
-        num_key_value_heads: int
+        num_query_groups: int
         ignore_index: int
         dtype: torch.dtype
         max_seq_length: int
         enable_visual: bool
         enable_audio: bool
+        lora_rank: int
+        lora_alpha: float
 
     def __init__(self, config):
         super().__init__()
@@ -190,6 +213,7 @@ class GPTXModel(nn.Module):
         self.max_seq_length = self.config.max_seq_length
         self.register_buffer('causal_mask', torch.tril(
             torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool)), persistent=False)
+        self.rope_cache = None
 
     def device(self):
         return self.output_layer.weight.device
@@ -203,40 +227,51 @@ class GPTXModel(nn.Module):
     def assign_kv_cache(self, max_batch_size):
         for layer in self.layers:
             layer.attention.kv_cache = KVCache(
-                max_batch_size, self.max_seq_length, self.config.num_key_value_heads,
+                max_batch_size, self.max_seq_length, self.config.num_query_groups, 
                 self.config.hidden_size // self.config.num_attention_heads,
                 self.dtype(), self.device())
     
-    def gen_rope_cache(self):
+    def forward(self, input_ids, input_pos: Optional[Tensor]=None, 
+        images: Optional[Tensor]=None, target_ids: Optional[Tensor]=None, temperature=0.9):
+        # input_ids: L[b, t]
+        # images: F[b, c, h, w]
+        if self.rope_cache is None:
+            self.rope_cache = self.__gen_rope_cache()
+        _, seq_length = input_ids.size()
+        word_embeddings_obj = getattr(self, self.word_embeddings_name)
+        embeddings = word_embeddings_obj(input_ids) # [b, t, hidden_size]
+        if input_pos is None:
+            input_pos = torch.arange(0, seq_length, device=self.device())
+            rope_cache = self.rope_cache[input_pos]
+            causal_mask = self.causal_mask[None, None, :seq_length, :seq_length]
+        else: # KV Cache enabled
+            rope_cache = self.rope_cache[input_pos]
+            causal_mask = self.causal_mask[None, None, input_pos]
+        for layer in self.layers:
+            embeddings = layer(embeddings, causal_mask, rope_cache, input_pos)
+        embeddings = self.final_norm(embeddings)
+        if target_ids is None:
+            return self.__post_pred(embeddings, temperature)
+        else:
+            return self.__post_loss(embeddings, target_ids)
+    
+    def __gen_rope_cache(self):
         rope_cache = AttentionLayer.gen_rope_cache(
             self.max_seq_length, self.rotary_dim // 2, self.dtype(), self.device())
         return rope_cache
 
-    def forward(self, rope_cache, input_ids, input_pos: Optional[Tensor]=None, 
-        images: Optional[Tensor]=None):
-        # input_ids: L[b, t]
-        # images: F[b, c, h, w]
-        _, seq_length = input_ids.size()
-        word_embeddings_obj = getattr(self, self.word_embeddings_name)
-        embeddings = word_embeddings_obj(input_ids) # [b, t, hidden_size]
-        if input_pos is not None:
-            rope_cache = rope_cache[input_pos]
-        causal_mask = self.causal_mask[None, None, input_pos]
-        for layer in self.layers:
-            embeddings = layer(embeddings, causal_mask, rope_cache, input_pos)
-        embeddings = self.final_norm(embeddings)
-        return embeddings
-
-    def post_loss(self, embeddings, target_ids):
+    def __post_loss(self, embeddings, target_ids):
         embeddings = self.output_layer(embeddings) # -> F[b, t, vocab_size]
         loss = F.cross_entropy(embeddings.view(-1, embeddings.size(-1)), 
             target_ids.contiguous().view(-1), 
             ignore_index=self.config.ignore_index)
         return loss
 
-    def post_pred(self, embeddings):
+    def __post_pred(self, embeddings, temperature):
         embeddings = self.output_layer(embeddings[:, -1, :]) # -> F[b, vocab_size]
-        return embeddings
+        embeddings = embeddings / temperature
+        ids_next = torch.multinomial(F.softmax(embeddings, dim=-1), num_samples=1) # b
+        return ids_next
 
 
 class ChatApplication:
@@ -253,7 +288,6 @@ class ChatApplication:
     @torch.no_grad()
     def generate(self, input_text, temperature=0.9):
         self.model.assign_kv_cache(1)
-        rope_cache = self.model.gen_rope_cache()
         input_ids = self.tokenizer.encode(input_text, bos=True, eos=True)
         T = len(input_ids)
         prompt = torch.empty([1, self.max_seq_length], device=self.model.device(), dtype=torch.long)
@@ -265,13 +299,10 @@ class ChatApplication:
             start = time.time()
             with torch.backends.cuda.sdp_kernel(
                 enable_flash=self.enable_flash, enable_mem_efficient=self.enable_flash, enable_math=True):
-                embeddings = self.model(rope_cache, prompt[:, input_pos], input_pos)
-            output = self.model.post_pred(embeddings)
+                idx_next = self.model(prompt[:, input_pos], input_pos, temperature=temperature)
             torch.cuda.synchronize()
             end = time.time()
             latency.append(end - start)
-            output = output / temperature
-            idx_next = torch.multinomial(F.softmax(output, dim=-1), num_samples=1) # b
             idx_next_item = idx_next[:, -1].item()
             word_next = self.tokenizer.decode([idx_next_item])
             print(word_next, end='', flush=True)

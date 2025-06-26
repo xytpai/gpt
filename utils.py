@@ -20,6 +20,8 @@ os.environ['MASTER_ADDR'] = 'localhost'
 os.environ['MASTER_PORT'] = '12355'
 
 
+import modeling
+
 class ModelLoader(object):
     '''
     [ Introduction ]
@@ -73,12 +75,25 @@ class ModelLoader(object):
         self.max_checkpoints = max_checkpoints
         self.ckpt = None
     
-    def __freeze_layers(self, freeze_patterns: list):
+    def __freeze_layers(self, freeze_patterns: list, use_lora: bool=False):
+        if use_lora:
+            for name, param in self.model.named_parameters():
+                if 'lora' in name:
+                    param.requires_grad = True
+                    print('unfreeze ' + name)
+                else:
+                    param.requires_grad = False
         for pattern in freeze_patterns:
             for name, param in self.model.named_parameters():
                 if pattern in name:
                     print('freeze ' + name)
                     param.requires_grad = False
+
+    def __weight_to_accumulate_type(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                print('promoting ' + name)
+                param.data = param.data.float()
     
     def __get_step_from_fname(self, fname):
         return int(fname.strip().split('_')[-1].replace('.ckpt', ''))
@@ -115,18 +130,21 @@ class ModelLoader(object):
              no_ddp: bool=False,
              to_cuda: bool=True,
              rank: int=0, 
-             freeze_patterns: list=[]):
+             freeze_patterns: list=[],
+             use_lora: bool=False):
         self.to_half = to_half
         self.no_checkpoint = no_checkpoint
         self.no_ddp = no_ddp
         self.to_cuda = to_cuda
         self.rank = rank
         self.freeze_patterns = freeze_patterns
+        self.use_lora = use_lora
         if self.to_half:
             self.model = self.model.half()
         if not self.no_checkpoint:
             self.__load_checkpoint()
-        self.__freeze_layers(self.freeze_patterns)
+        self.__freeze_layers(self.freeze_patterns, self.use_lora)
+        self.__weight_to_accumulate_type()
         if to_cuda:
             self.model = self.model.cuda(self.rank)
         if not no_ddp:
@@ -211,7 +229,7 @@ class TrainingScheduler(object):
         model, 
         lr_base, 
         weight_decay, 
-        weight_decay_whitelist=(torch.nn.Linear, ), 
+        weight_decay_whitelist=(torch.nn.Linear, modeling.LoRALayer), 
         weight_decay_blacklist=(torch.nn.Embedding, )):
         # AdamW optimizer
         decay = set()
@@ -266,6 +284,7 @@ class TrainingScheduler(object):
                  fname_prefix: str,
                  max_checkpoints: int,
                  freeze_patterns: list,
+                 use_lora: bool,
                  dataset,
                  batch_size: int,
                  lr_base: float,
@@ -281,6 +300,7 @@ class TrainingScheduler(object):
         self.fname_prefix = fname_prefix
         self.max_checkpoints = max_checkpoints
         self.freeze_patterns = freeze_patterns
+        self.use_lora = use_lora
         self.dataset = dataset
         self.batch_size = batch_size
         self.lr_base = lr_base
@@ -296,7 +316,7 @@ class TrainingScheduler(object):
         self.rank = rank
         self.world_size = world_size
         self.modelloader = ModelLoader(self.model, self.checkpoints_dir, self.fname_prefix, self.max_checkpoints)
-        self.modelloader.load(rank=self.rank, freeze_patterns=self.freeze_patterns)
+        self.modelloader.load(rank=self.rank, freeze_patterns=self.freeze_patterns, use_lora=self.use_lora)
         self.dataloader = self.prepare_dataloader(self.dataset, self.batch_size)
         self.opt = self.prepare_optimizer(self.modelloader.model, self.lr_base, self.weight_decay,
                                           weight_decay_blacklist=self.weight_decay_blacklist)
@@ -337,13 +357,11 @@ class TrainingScheduler(object):
             if self.rank == 0:
                 lr_scheduler_sdict = self.lr_scheduler.state_dict()
                 self.modelloader.store(self.step, {'lr_scheduler': lr_scheduler_sdict})
-                self.__store_checkpoint()
             is_end = True
         if self.rank == 0:
             if self.count_for_save >= self.save_interval:
                 lr_scheduler_sdict = self.lr_scheduler.state_dict()
                 self.modelloader.store(self.step, {'lr_scheduler': lr_scheduler_sdict})
-                self.__store_checkpoint()
                 self.count_for_save = 0
         return is_end
         
@@ -352,8 +370,8 @@ class TrainingScheduler(object):
             return True
         for i, (x, y) in enumerate(self.dataloader):
             # accumulate gradient
-            with autocast():
-                state, loss = self.modelloader.model(x, y)
+            with autocast(dtype=torch.float16):
+                loss = self.modelloader.model(x, target_ids=y)
             self.scaler.scale(loss / float(self.gradient_accumulation_steps)).backward()
             if self.grad_acc_count < self.gradient_accumulation_steps - 1:
                 self.grad_acc_count += 1
@@ -370,7 +388,7 @@ class TrainingScheduler(object):
             # step system
             loss_t = torch.full((1, ), loss.item(), dtype=torch.double).cuda(self.rank)
             all_reduce(loss_t, op=ReduceOp.SUM)
-            reduced_loss = float(loss_t[0].item()) / self.args.world_size
+            reduced_loss = float(loss_t[0].item()) / self.world_size
             is_end = self.__step_system(reduced_loss)
             if is_end:
                 return True

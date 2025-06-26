@@ -3,7 +3,7 @@ import argparse
 import torch.multiprocessing as mp
 
 from configs import get_gpt_config
-from modeling import GPTXModel, RMSNormLayer
+from modeling import GPTXModel, RMSNormLayer, LoRALayer
 from datasets import PromptDataset
 from utils import TrainingScheduler, DDPContext
 
@@ -25,13 +25,14 @@ def parse_args():
     parser.add_argument('--end', type=int, default=5000000)
     parser.add_argument('--save_interval', type=int, default=200)
     parser.add_argument('--num_save_files', type=int, default=10)
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=32)
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parser.add_argument('--load', type=str, default='')
     parser.add_argument('--half', action='store_true')
     args = parser.parse_args()
     new_args = get_gpt_config(args.level)
     new_args.update(vars(args))
-    new_args.freeze_patterns = ['layers']
+    new_args.freeze_patterns = []
+    new_args.use_lora = True
     return new_args
 
 
@@ -45,6 +46,7 @@ def get_scheduler(args):
         fname_prefix,
         args.num_save_files,
         args.freeze_patterns,
+        True,
         dataset,
         args.batch_size,
         args.lr_base,
