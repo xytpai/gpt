@@ -128,6 +128,30 @@ class FeedForwardLayer(nn.Module):
         return x
 
 
+class MOEFeedForwardLayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
+        self.w1 = nn.Parameter(torch.empty(config.num_experts, config.ffn_hidden_size, config.hidden_size))
+        self.w2 = nn.Parameter(torch.empty(config.num_experts, config.hidden_size, config.ffn_hidden_size))
+        self.w3 = nn.Parameter(torch.empty(config.num_experts, config.ffn_hidden_size, config.hidden_size))
+        self.hidden_size = config.hidden_size
+        self.num_activated_experts = config.num_activated_experts
+
+    def forward(self, x):
+        x = x.view(-1, self.hidden_size)
+        expert_weights = F.softmax(self.gate(x), dim=-1) # _, num_experts
+        expert_weights, expert_indices = torch.topk(expert_weights, self.num_activated_experts, dim=-1)
+        expert_weights /= expert_weights.sum(dim=-1, keepdim=True) # _, num_activated_experts
+        x1 = F.silu(torch.einsum('ti, taoi -> tao', 
+                                 x, self.w1[expert_indices])) # _, num_activated_experts, ffn_hidden_size
+        x3 = torch.einsum('ti, taoi -> tao', 
+                          x, self.w3[expert_indices]) # _, num_activated_experts, ffn_hidden_size
+        expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), 
+                                    self.w2[expert_indices]) # _, num_activated_experts, hidden_size
+        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights) # _, hidden_size
+
+
 class RMSNormLayer(nn.Module):
     def __init__(self, config, eps=1e-5):
         super().__init__()
