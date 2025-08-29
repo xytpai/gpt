@@ -1,4 +1,7 @@
+import os
 import time
+import json
+import tiktoken
 import numpy as np
 
 import torch
@@ -7,22 +10,32 @@ import torch.nn.functional as F
 
 from dataclasses import dataclass
 from dacite import from_dict
-from typing import Optional
 from torch import Tensor
+from typing import Optional
+
+from tokenization import Tokenizer, Message, ChatFormat
 
 
-class LoRALayer(nn.Module):
-    def __init__(self, in_dim, out_dim, rank, alpha):
-        super().__init__()
-        std_dev = 1 / torch.sqrt(torch.tensor(rank).float())
-        self.a_weight = nn.Parameter(torch.randn(in_dim, rank) * std_dev)
-        self.b_weight = nn.Parameter(torch.zeros(rank, out_dim))
-        self.alpha = alpha
-    
-    def forward(self, x):
-        dtype = x.dtype
-        x = self.alpha * (x.float() @ self.a_weight @ self.b_weight)
-        return x.to(dtype)
+@dataclass
+class ModelArgs:
+    dim: int = 4096
+    n_layers: int = 32
+    n_heads: int = 32
+    n_kv_heads: Optional[int] = None
+    vocab_size: int = -1
+    multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
+    ffn_dim_multiplier: Optional[float] = None
+    norm_eps: float = 1e-5
+    rope_theta: float = 500000
+    max_batch_size: int = 32
+    max_seq_len: int = 2048
+    dropout_prob: float = 0.0
+    dtype: torch.dtype = torch.half
+    # MoE
+    num_experts: int = 0
+    num_activated_experts: int = 0
+    # Training
+    ignore_index: int = -1
 
 
 class KVCache(nn.Module):
@@ -42,208 +55,194 @@ class KVCache(nn.Module):
         return k_out, v_out
 
 
-class AttentionLayer(nn.Module):
-    def __init__(self, config):
+class Attention(nn.Module):
+    def __init__(self, args: ModelArgs):
         super().__init__()
-        assert config.hidden_size % config.num_attention_heads == 0
-        self.dropout_prob = config.dropout_prob
-        self.num_attention_heads = config.num_attention_heads
-        self.attention_head_size = config.hidden_size // config.num_attention_heads
-        self.num_query_groups = config.num_query_groups
-        self.query = nn.Linear(config.hidden_size, config.hidden_size, bias=True, dtype=config.dtype)
-        kv_size = self.attention_head_size * self.num_query_groups
-        self.key = nn.Linear(config.hidden_size, kv_size, bias=True, dtype=config.dtype)
-        self.value = nn.Linear(config.hidden_size, kv_size, bias=True, dtype=config.dtype)
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=False, dtype=config.dtype)
+        assert args.dim % args.n_heads == 0
+        self.dropout_prob = args.dropout_prob
+        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
+        self.head_dim = args.dim // args.n_heads
+        self.n_rep = args.n_heads // self.n_kv_heads
+        # weights
+        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False, dtype=args.dtype)
+        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype)
+        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype)
+        self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False, dtype=args.dtype)
         self.kv_cache = None
-        # lora
-        self.query_lora = LoRALayer(config.hidden_size, config.hidden_size, config.lora_rank, config.lora_alpha)
-        self.key_lora = LoRALayer(config.hidden_size, kv_size, config.lora_rank, config.lora_alpha)
-        self.value_lora = LoRALayer(config.hidden_size, kv_size, config.lora_rank, config.lora_alpha)
-        self.dense_lora = LoRALayer(config.hidden_size, config.hidden_size, config.lora_rank, config.lora_alpha)
 
     @staticmethod
-    def gen_rope_cache(max_seq_length: int, n_elem: int, 
-        dtype: torch.dtype, device: torch.device, base: int = 10000):
-        theta = 1.0 / (base ** (torch.arange(0, n_elem, 2, dtype=dtype, device=device) / n_elem))
-        seq_idx = torch.arange(max_seq_length, dtype=dtype, device=device)
-        idx_theta = torch.outer(seq_idx, theta).float()
-        cache = torch.stack([torch.cos(idx_theta), torch.sin(idx_theta)], dim=-1)
-        if dtype in (torch.float16, torch.bfloat16, torch.int8):
-            cache = cache.bfloat16() if dtype == torch.bfloat16 else cache.half()
-        return cache # -> [seq_length, n_elem, 2]
+    def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+        t = torch.arange(end, device=freqs.device, dtype=torch.float32)
+        freqs = torch.outer(t, freqs)
+        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
+        return freqs_cis
+    
+    def apply_rotary_emb(self, xq, xk, freqs_cis):
+        def reshape_for_broadcast(freqs_cis, x):
+            ndim = x.ndim
+            assert 0 <= 1 < ndim
+            assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+            shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+            return freqs_cis.view(*shape)
+        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+        freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
+        xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+        xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+        return xq_out.type_as(xq), xk_out.type_as(xk)
 
-    def apply_rotary_emb(self, x, rope_cache):
-        batch_size, seq_length, num_heads, head_size = x.size()
-        rot_dim = rope_cache.shape[-2] * 2
-        x, x_pass = x[..., :rot_dim], x[..., rot_dim:]
-        xshaped = x.reshape(batch_size, seq_length, num_heads, rot_dim // 2, 2)
-        rope_cache = rope_cache.view(1, seq_length, 1, xshaped.size(3), 2)
-        x_out2 = torch.stack(
-            [
-                xshaped[..., 0] * rope_cache[..., 0] - xshaped[..., 1] * rope_cache[..., 1],
-                xshaped[..., 1] * rope_cache[..., 0] + xshaped[..., 0] * rope_cache[..., 1],
-            ],
-            -1,
-        )
-        x_out2 = x_out2.flatten(3)
-        return torch.cat((x_out2, x_pass), dim=-1)
-
-    def forward(self, x, attention_mask, rope_cache, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
-        batch_size, seq_length, hidden_size = x.size()
-        q = self.query(x) + self.query_lora(x)
+    def forward(self, x, attention_mask, freqs_cis, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
+        batch_size, seq_length, _ = x.size()
+        # Infer xq, xk and xv
+        xq = self.wq(x)
         x_for_kv = x if xa is None else xa
-        k = self.key(x_for_kv) + self.key_lora(x_for_kv)
-        v = self.value(x_for_kv) + self.value_lora(x_for_kv)
-        q = q.view(batch_size, seq_length, self.num_attention_heads, self.attention_head_size)
-        k = k.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
-        v = v.view(batch_size, seq_length, self.num_query_groups, self.attention_head_size)
-        if rope_cache is not None:
-            q = self.apply_rotary_emb(q, rope_cache)
-            k = self.apply_rotary_emb(k, rope_cache)
-        q, k, v = [item.transpose(1, 2).contiguous() for item in [q, k, v]] # -> (b, nh, t, hs)
+        xk = self.wk(x_for_kv)
+        xv = self.wv(x_for_kv)
+        xq = xq.view(batch_size, seq_length, -1, self.head_dim)
+        xk = xk.view(batch_size, seq_length, -1, self.head_dim)
+        xv = xv.view(batch_size, seq_length, -1, self.head_dim)
+        # Apply RoPE
+        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis)
+        # Refine xq, xk and xv shape
+        xq, xk, xv = [item.transpose(1, 2).contiguous() for item in [xq, xk, xv]] # -> (b, nh, t, hs)
         if self.kv_cache is not None:
-            k, v = self.kv_cache.update(input_pos, k, v)
-        k = k.repeat_interleave(self.num_attention_heads // self.num_query_groups, dim=1)
-        v = v.repeat_interleave(self.num_attention_heads // self.num_query_groups, dim=1)
+            xk, xv = self.kv_cache.update(input_pos, xk, xv)
+        xk = xk.repeat_interleave(self.n_rep, dim=1)
+        xv = xv.repeat_interleave(self.n_rep, dim=1)
+        # DSPA
         output = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attention_mask, dropout_p=self.dropout_prob)
-        output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, hidden_size)
-        output = self.dense(output) + self.dense_lora(output)
-        return output
+            xq, xk, xv, attn_mask=attention_mask, dropout_p=self.dropout_prob)
+        # Infer output
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, -1)
+        return self.wo(output)
 
 
-class FeedForwardLayer(nn.Module):
-    def __init__(self, config):
+def refine_hidden_dim(hidden_dim, multiple_of=256, ffn_dim_multiplier=None):
+    hidden_dim = int(2 * hidden_dim / 3)
+    if ffn_dim_multiplier is not None:
+        hidden_dim = int(ffn_dim_multiplier * hidden_dim)
+    hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+    return hidden_dim
+
+
+class FeedForward(nn.Module):
+    def __init__(self, args: ModelArgs):
         super().__init__()
         # Project to 4h. If using swiglu double the output width, see https://arxiv.org/pdf/2002.05202.pdf
-        self.dense_h_to_4h = nn.Linear(config.hidden_size, config.ffn_hidden_size * 2, bias=False, dtype=config.dtype)
-        self.dense_4h_to_h = nn.Linear(config.ffn_hidden_size, config.hidden_size, bias=False, dtype=config.dtype)
+        hidden_dim = refine_hidden_dim(4 * args.dim, args.multiple_of, args.ffn_dim_multiplier)
+        self.w1 = nn.Linear(args.dim, hidden_dim, bias=False, dtype=args.dtype)
+        self.w2 = nn.Linear(hidden_dim, args.dim, bias=False, dtype=args.dtype)
+        self.w3 = nn.Linear(args.dim, hidden_dim, bias=False, dtype=args.dtype)
 
     def forward(self, x):
-        x = self.dense_h_to_4h(x)
-        x = torch.chunk(x, 2, dim=-1)
-        x = F.silu(x[0]) * x[1]
-        x = self.dense_4h_to_h(x)
-        return x
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
-class MOEFeedForwardLayer(nn.Module):
-    def __init__(self, config):
+class MOEFeedForward(nn.Module):
+    def __init__(self, args: ModelArgs):
         super().__init__()
-        self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
-        self.w1 = nn.Parameter(torch.empty(config.num_experts, config.ffn_hidden_size, config.hidden_size))
-        self.w2 = nn.Parameter(torch.empty(config.num_experts, config.hidden_size, config.ffn_hidden_size))
-        self.w3 = nn.Parameter(torch.empty(config.num_experts, config.ffn_hidden_size, config.hidden_size))
-        self.hidden_size = config.hidden_size
-        self.num_activated_experts = config.num_activated_experts
+        # Project to 4h. If using swiglu double the output width, see https://arxiv.org/pdf/2002.05202.pdf
+        hidden_dim = refine_hidden_dim(4 * args.dim, args.multiple_of, args.ffn_dim_multiplier)
+        self.gate = nn.Linear(args.dim, args.num_experts, bias=False)
+        self.w1 = nn.Parameter(torch.empty(args.num_experts, hidden_dim, args.dim))
+        self.w2 = nn.Parameter(torch.empty(args.num_experts, args.dim, hidden_dim))
+        self.w3 = nn.Parameter(torch.empty(args.num_experts, hidden_dim, args.dim))
+        self.dim = args.dim
+        self.num_activated_experts = args.num_activated_experts
 
     def forward(self, x):
-        x = x.view(-1, self.hidden_size)
+        x = x.view(-1, self.dim)
         expert_weights = F.softmax(self.gate(x), dim=-1) # _, num_experts
         expert_weights, expert_indices = torch.topk(expert_weights, self.num_activated_experts, dim=-1)
         expert_weights /= expert_weights.sum(dim=-1, keepdim=True) # _, num_activated_experts
         x1 = F.silu(torch.einsum('ti, taoi -> tao', 
-                                 x, self.w1[expert_indices])) # _, num_activated_experts, ffn_hidden_size
+                                 x, self.w1[expert_indices])) # _, num_activated_experts, hidden_dim
         x3 = torch.einsum('ti, taoi -> tao', 
-                          x, self.w3[expert_indices]) # _, num_activated_experts, ffn_hidden_size
+                          x, self.w3[expert_indices]) # _, num_activated_experts, hidden_dim
         expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), 
-                                    self.w2[expert_indices]) # _, num_activated_experts, hidden_size
-        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights) # _, hidden_size
+                                    self.w2[expert_indices]) # _, num_activated_experts, dim
+        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights) # _, dim
 
 
-class RMSNormLayer(nn.Module):
-    def __init__(self, config, eps=1e-5):
+class RMSNorm(nn.Module):
+    def __init__(self, args: ModelArgs):
         super().__init__()
-        self.weight = torch.nn.Parameter(torch.empty(config.hidden_size, dtype=config.dtype))
-        self.eps = eps
+        self.eps = args.norm_eps
+        self.weight = torch.nn.Parameter(torch.ones(args.dim, dtype=args.dtype))
 
-    def forward(self, hidden_states: torch.Tensor):
-        input_dtype = hidden_states.dtype
-        variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
-        return (self.weight * hidden_states).to(input_dtype)
+    def forward(self, x):
+        input_dtype = x.dtype
+        variance = x.float().pow(2).mean(-1, keepdim=True)
+        x = x * torch.rsqrt(variance + self.eps)
+        x = x.to(input_dtype)
+        return self.weight * x
 
 
-class TransformerLayer(nn.Module):
-    def __init__(self, config):
+class TransformerBlock(nn.Module):
+    def __init__(self, layer_id: int, args: ModelArgs):
         super().__init__()
-        self.attention = AttentionLayer(config)
-        if config.enable_visual:
-            self.visual_attention = AttentionLayer(config)
-            self.visual_norm = RMSNormLayer(config)
+        self.attention = Attention(args)
+        if getattr(args, 'enable_visual', None):
+            self.visual_attention = Attention(args)
+            self.visual_norm = RMSNorm(args)
             self.enable_visual = True
         else:
             self.enable_visual = False
-        if config.enable_audio:
-            self.audio_attention = AttentionLayer(config)
-            self.audio_norm = RMSNormLayer(config)
+        if getattr(args, 'enable_audio', None):
+            self.audio_attention = Attention(args)
+            self.audio_norm = RMSNorm(args)
             self.enable_audio = True
         else:
             self.enable_audio = False
-        self.feed_forward = FeedForwardLayer(config)
-        self.input_norm = RMSNormLayer(config)
-        self.post_attention_norm = RMSNormLayer(config)
+        self.layer_id = layer_id
+        self.feed_forward = FeedForward(args)
+        self.attention_norm = RMSNorm(args)
+        self.ffn_norm = RMSNorm(args)
 
-    def forward(self, x, attention_mask, rope_cache, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
-        x = x + self.attention(self.input_norm(x), attention_mask, rope_cache, input_pos)
+    def forward(self, x, attention_mask, freqs_cis, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
+        x = x + self.attention(self.attention_norm(x), attention_mask, freqs_cis, input_pos)
         if self.enable_visual:
-            x = x + self.visual_attention(self.visual_norm(x), attention_mask, rope_cache, input_pos, xa)
+            x = x + self.visual_attention(self.visual_norm(x), attention_mask, freqs_cis, input_pos, xa)
         if self.enable_audio:
-            x = x + self.audio_attention(self.audio_norm(x), attention_mask, rope_cache, input_pos, xa)
-        out = x + self.feed_forward(self.post_attention_norm(x))
+            x = x + self.audio_attention(self.audio_norm(x), attention_mask, freqs_cis, input_pos, xa)
+        out = x + self.feed_forward(self.ffn_norm(x))
         return out
 
 
-class EmbeddingLayer(nn.Module):
-    def __init__(self, config):
+class VocabEmbedding(nn.Module):
+    def __init__(self, args: ModelArgs):
         super().__init__()
-        self.hidden_size = config.hidden_size
-        self.word_embeddings = nn.Embedding(config.vocab_size, self.hidden_size, dtype=config.dtype)
+        self.word_embeddings = nn.Embedding(args.vocab_size, args.dim, dtype=args.dtype)
 
     def forward(self, input_ids):
-        embeddings = self.word_embeddings(input_ids)
-        return embeddings
+        return self.word_embeddings(input_ids)
 
 
-class GPTXModel(nn.Module):
-
-    @dataclass
-    class Config:
-        hidden_size: int
-        ffn_hidden_size: int
-        num_attention_heads: int
-        vocab_size: int
-        dropout_prob: float
-        num_layers: int
-        num_query_groups: int
-        ignore_index: int
-        dtype: torch.dtype
-        max_seq_length: int
-        enable_visual: bool
-        enable_audio: bool
-        lora_rank: int
-        lora_alpha: float
-
-    def __init__(self, config):
+class Transformer(nn.Module):
+    def __init__(self, args: ModelArgs):
         super().__init__()
-        self.config = config
-        self.word_embeddings_name = 'word_embeddings_' + str(config.vocab_size)
-        setattr(self, self.word_embeddings_name, EmbeddingLayer(config))
-        self.rotary_dim = config.hidden_size // config.num_attention_heads
-        self.layers = nn.ModuleList([TransformerLayer(config) for _ in range(config.num_layers)])
-        self.final_norm = RMSNormLayer(config)
-        self.output_layer = nn.Linear(config.hidden_size, config.vocab_size, bias=False, dtype=config.dtype)
-        self.max_seq_length = self.config.max_seq_length
+        self.args = args
+        self.vocab_size = args.vocab_size
+        self.n_layers = args.n_layers
+        self.max_seq_len = args.max_seq_len
+        self.tok_embeddings = VocabEmbedding(args)
+        self.layers = nn.ModuleList([TransformerBlock(layer_id, args) for layer_id in range(args.n_layers)])
+        self.norm = RMSNorm(args)
+        self.output = nn.Linear(args.dim, self.vocab_size, bias=False, dtype=args.dtype)
+        self.freqs_cis = Attention.precompute_freqs_cis(
+            args.dim // args.n_heads,
+            self.max_seq_len * 2,
+            args.rope_theta,
+        )
         self.register_buffer('causal_mask', torch.tril(
-            torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool)), persistent=False)
-        self.rope_cache = None
+            torch.ones(self.max_seq_len, self.max_seq_len, dtype=torch.bool)), persistent=False)
 
     def device(self):
-        return self.output_layer.weight.device
+        return self.output.weight.device
     
     def dtype(self):
-        return self.config.dtype
+        return self.args.dtype
     
     def size(self):
         return sum([np.prod(list(p.size())) for p in self.parameters()])
@@ -251,79 +250,96 @@ class GPTXModel(nn.Module):
     def assign_kv_cache(self, max_batch_size):
         for layer in self.layers:
             layer.attention.kv_cache = KVCache(
-                max_batch_size, self.max_seq_length, self.config.num_query_groups, 
-                self.config.hidden_size // self.config.num_attention_heads,
+                max_batch_size, self.max_seq_len, self.args.n_kv_heads, 
+                self.args.dim // self.args.n_heads,
                 self.dtype(), self.device())
     
-    def forward(self, input_ids, input_pos: Optional[Tensor]=None, 
-        images: Optional[Tensor]=None, target_ids: Optional[Tensor]=None, temperature=0.9):
-        # input_ids: L[b, t]
+    def forward(
+        self, 
+        tokens, 
+        input_pos: Optional[Tensor]=None, 
+        images: Optional[Tensor]=None):
+        # tokens: L[b, t]
         # images: F[b, c, h, w]
-        if self.rope_cache is None:
-            self.rope_cache = self.__gen_rope_cache()
-        _, seq_length = input_ids.size()
-        word_embeddings_obj = getattr(self, self.word_embeddings_name)
-        embeddings = word_embeddings_obj(input_ids) # [b, t, hidden_size]
+        _, seq_length = tokens.size()
+        h = self.tok_embeddings(tokens) # [b, t, hidden_size]
+        self.freqs_cis = self.freqs_cis.to(self.device())
+
         if input_pos is None:
             input_pos = torch.arange(0, seq_length, device=self.device())
-            rope_cache = self.rope_cache[input_pos]
+            freqs_cis = self.freqs_cis[input_pos]
             causal_mask = self.causal_mask[None, None, :seq_length, :seq_length]
         else: # KV Cache enabled
-            rope_cache = self.rope_cache[input_pos]
+            freqs_cis = self.freqs_cis[input_pos]
             causal_mask = self.causal_mask[None, None, input_pos]
         for layer in self.layers:
-            embeddings = layer(embeddings, causal_mask, rope_cache, input_pos)
-        embeddings = self.final_norm(embeddings)
-        if target_ids is None:
-            return self.__post_pred(embeddings, temperature)
-        else:
-            return self.__post_loss(embeddings, target_ids)
-    
-    def __gen_rope_cache(self):
-        rope_cache = AttentionLayer.gen_rope_cache(
-            self.max_seq_length, self.rotary_dim // 2, self.dtype(), self.device())
-        return rope_cache
+            h = layer(h, causal_mask, freqs_cis, input_pos)
+        h = self.norm(h)
+        return self.output(h)
 
-    def __post_loss(self, embeddings, target_ids):
-        embeddings = self.output_layer(embeddings) # -> F[b, t, vocab_size]
-        loss = F.cross_entropy(embeddings.view(-1, embeddings.size(-1)), 
+    @staticmethod
+    def post_loss(h, target_ids):
+        # h -> F[b, t, vocab_size]
+        loss = F.cross_entropy(h.view(-1, h.size(-1)), 
             target_ids.contiguous().view(-1), 
-            ignore_index=self.config.ignore_index)
+            ignore_index=self.args.ignore_index)
         return loss
 
-    def __post_pred(self, embeddings, temperature):
-        embeddings = self.output_layer(embeddings[:, -1, :]) # -> F[b, vocab_size]
-        embeddings = embeddings / temperature
-        ids_next = torch.multinomial(F.softmax(embeddings, dim=-1), num_samples=1) # b
+    @staticmethod
+    def post_pred(h, temperature):
+        h = h[:, -1, :] / temperature # -> F[b, vocab_size]
+        ids_next = torch.multinomial(F.softmax(h, dim=-1), num_samples=1) # b
         return ids_next
 
 
-class ChatApplication:
-    def __init__(self, model, tokenizer, compile=False):
+class SimpleChatApp:
+    def __init__(self, file, compile=False):
+        self.load_model(file)
         if not compile:
-            self.model = model
             self.enable_flash = True
         else:
-            self.model = torch.compile(model)
+            self.model = torch.compile(self.model)
             self.enable_flash = False
-        self.tokenizer = tokenizer
-        self.max_seq_length = self.model.max_seq_length
+        self.max_seq_len = self.model.max_seq_len
+    
+    def load_model(self, file):
+        with open(file, 'r', encoding='utf-8') as f:
+            jf = json.load(f)
+        args = from_dict(data_class=ModelArgs, data=jf)
+        print(args)
+        model = Transformer(args)
+        ckpt = torch.load(jf['wfiles'][0], map_location='cpu')
+        missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+        if len(missing_keys) > 0 or len(unexpected_keys) > 0:
+            print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
+        type_size = 1
+        print('Model {} : params: {:4f}B'.format(model._get_name(), model.size() * type_size / 1000 / 1000 / 1000))
+        self.tokenizer = Tokenizer(jf['tfile'])
+        self.chat = ChatFormat(self.tokenizer)
+        self.model = model.cuda()
 
     @torch.no_grad()
     def generate(self, input_text, temperature=0.9):
+        message = {
+            "role": "user",
+            "content": input_text,
+        }
+        print(message)
         self.model.assign_kv_cache(1)
-        input_ids = self.tokenizer.encode(input_text, bos=True, eos=True)
+        input_ids = self.chat.encode_message(message)
         T = len(input_ids)
-        prompt = torch.empty([1, self.max_seq_length], device=self.model.device(), dtype=torch.long)
+        prompt = torch.empty([1, self.max_seq_len], device=self.model.device(), dtype=torch.long)
         input_pos = torch.arange(0, T, device=self.model.device())
         prompt[:, input_pos] = torch.LongTensor(input_ids).to(self.model.device()).view(1, -1)
         latency = []
-        for i in range(self.max_seq_length - T):
+        for i in range(self.max_seq_len - T):
             torch.cuda.synchronize()
             start = time.time()
-            with torch.backends.cuda.sdp_kernel(
-                enable_flash=self.enable_flash, enable_mem_efficient=self.enable_flash, enable_math=True):
-                idx_next = self.model(prompt[:, input_pos], input_pos, temperature=temperature)
+            # with torch.backends.cuda.sdp_kernel(
+            #     enable_flash=self.enable_flash, enable_mem_efficient=self.enable_flash, enable_math=True):
+            if True:
+                h = self.model(prompt[:, input_pos], input_pos)
+                idx_next = Transformer.post_pred(h, temperature)
             torch.cuda.synchronize()
             end = time.time()
             latency.append(end - start)
@@ -343,26 +359,7 @@ class ChatApplication:
 
 if __name__ == '__main__':
     import sys
-    from configs import get_gpt_config
-    from tokenization import SPTokenizer
-
-    wpath = sys.argv[1]
+    cpath = sys.argv[1]
     input_text = sys.argv[2] # "写一篇一万字短片科幻小说，要求讲述人类探索亚空间的故事"
-
-    config = from_dict(data_class=GPTXModel.Config, data=get_gpt_config('6b'))
-    print(config)
-    model = GPTXModel(config)
-
-    ckpt = torch.load(wpath, map_location='cpu')
-    missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
-    if len(missing_keys) > 0 or len(unexpected_keys) > 0:
-        print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
-
-    model = model.cuda()
-    type_size = 1
-    print(model)
-    print('Model {} : params: {:4f}B'.format(model._get_name(), model.size() * type_size / 1000 / 1000 / 1000))
-
-    tokenizer = SPTokenizer('tokenizer.model')
-    chatapp = ChatApplication(model, tokenizer)
+    chatapp = SimpleChatApp(cpath)
     output = chatapp.generate(input_text)

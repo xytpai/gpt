@@ -1,7 +1,3 @@
-six
-addict
-tqdm
-tensorboard
+torch
 dacite
-sentencepiece
-packaging
+tiktoken
