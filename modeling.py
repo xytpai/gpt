@@ -3,7 +3,6 @@ import time
 import json
 import tiktoken
 import numpy as np
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,7 +11,6 @@ from dataclasses import dataclass
 from dacite import from_dict
 from torch import Tensor
 from typing import Optional
-
 from tokenization import Tokenizer, Message, ChatFormat
 
 
@@ -210,15 +208,6 @@ class TransformerBlock(nn.Module):
         return out
 
 
-class VocabEmbedding(nn.Module):
-    def __init__(self, args: ModelArgs):
-        super().__init__()
-        self.word_embeddings = nn.Embedding(args.vocab_size, args.dim, dtype=args.dtype)
-
-    def forward(self, input_ids):
-        return self.word_embeddings(input_ids)
-
-
 class Transformer(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -226,7 +215,7 @@ class Transformer(nn.Module):
         self.vocab_size = args.vocab_size
         self.n_layers = args.n_layers
         self.max_seq_len = args.max_seq_len
-        self.tok_embeddings = VocabEmbedding(args)
+        self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim, dtype=args.dtype)
         self.layers = nn.ModuleList([TransformerBlock(layer_id, args) for layer_id in range(args.n_layers)])
         self.norm = RMSNorm(args)
         self.output = nn.Linear(args.dim, self.vocab_size, bias=False, dtype=args.dtype)
@@ -309,13 +298,13 @@ class SimpleChatApp:
         print(args)
         model = Transformer(args)
         ckpt = torch.load(jf['wfiles'][0], map_location='cpu')
-        missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=True)
         if len(missing_keys) > 0 or len(unexpected_keys) > 0:
             print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
         type_size = 1
         print('Model {} : params: {:4f}B'.format(model._get_name(), model.size() * type_size / 1000 / 1000 / 1000))
         self.tokenizer = Tokenizer(jf['tfile'])
-        self.chat = ChatFormat(self.tokenizer)
+        self.formatter = ChatFormat(self.tokenizer)
         self.model = model.cuda()
 
     @torch.no_grad()
@@ -324,9 +313,8 @@ class SimpleChatApp:
             "role": "user",
             "content": input_text,
         }
-        print(message)
         self.model.assign_kv_cache(1)
-        input_ids = self.chat.encode_message(message)
+        input_ids = self.formatter.encode_message(message)
         T = len(input_ids)
         prompt = torch.empty([1, self.max_seq_len], device=self.model.device(), dtype=torch.long)
         input_pos = torch.arange(0, T, device=self.model.device())
@@ -345,9 +333,9 @@ class SimpleChatApp:
             latency.append(end - start)
             idx_next_item = idx_next[:, -1].item()
             word_next = self.tokenizer.decode([idx_next_item])
-            print(word_next, end='', flush=True)
-            if idx_next_item == self.tokenizer.eos_id:
+            if idx_next_item in self.tokenizer.stop_tokens:
                 break
+            print(word_next, end='', flush=True)
             input_pos = torch.tensor([T], device=self.model.device(), dtype=torch.int)
             prompt[:, T] = idx_next
             T += 1
@@ -360,6 +348,6 @@ class SimpleChatApp:
 if __name__ == '__main__':
     import sys
     cpath = sys.argv[1]
-    input_text = sys.argv[2] # "写一篇一万字短片科幻小说，要求讲述人类探索亚空间的故事"
+    input_text = sys.argv[2]
     chatapp = SimpleChatApp(cpath)
     output = chatapp.generate(input_text)
