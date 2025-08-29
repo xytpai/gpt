@@ -297,8 +297,11 @@ class SimpleChatApp:
         args = from_dict(data_class=ModelArgs, data=jf)
         print(args)
         model = Transformer(args)
-        ckpt = torch.load(jf['wfiles'][0], map_location='cpu')
-        missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=True)
+        state_dict = {}
+        for wfile in jf['wfiles']:
+            ckpt = torch.load(wfile, map_location='cpu')
+            state_dict.update(ckpt)
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
         if len(missing_keys) > 0 or len(unexpected_keys) > 0:
             print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
         type_size = 1
