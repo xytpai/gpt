@@ -16,3 +16,11 @@ Example outputs:
 
 The tallest mountain is Mount Everest, located in the Himalayas on the border between Nepal and Tibet, China. It stands at an impressive 8,848 meters (29,029 feet) above sea level.
 ```
+
+#### Huggingface Scripts
+
+Simple CMD for inference using huggingface API:
+
+```bash
+python infer_hf.py ~/data/qwen3-4b/ "Introduce yourself in Chinese"
+```
