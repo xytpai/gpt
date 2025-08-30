@@ -9,15 +9,17 @@
   "norm_eps": 1e-05,
   "rope_theta": 500000.0,
   "use_scaled_rope": true,
+  "dtype": "torch.half",
 
+  "base_dir": "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct",
   "wfiles": [
-    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.00.pth",
-    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.01.pth",
-    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.02.pth",
-    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.03.pth",
-    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.04.pth",
-    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.05.pth",
-    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.06.pth",
-    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.07.pth"],
-  "tfile": "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/tokenizer.model"
+    "consolidated.00.pth",
+    "consolidated.01.pth",
+    "consolidated.02.pth",
+    "consolidated.03.pth",
+    "consolidated.04.pth",
+    "consolidated.05.pth",
+    "consolidated.06.pth",
+    "consolidated.07.pth"],
+  "tfile": "tokenizer.model"
 }

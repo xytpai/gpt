@@ -9,7 +9,9 @@
   "norm_eps": 1e-05,
   "rope_theta": 500000.0,
   "use_scaled_rope": true,
+  "dtype": "torch.half",
 
-  "wfiles": ["/home/xytpai/.llama/checkpoints/Llama3.2-3B-Instruct/consolidated.00.pth"],
-  "tfile": "/home/xytpai/.llama/checkpoints/Llama3.2-3B-Instruct/tokenizer.model"
+  "base_dir": "/home/xytpai/.llama/checkpoints/Llama3.2-3B-Instruct",
+  "wfiles": ["consolidated.00.pth"],
+  "tfile": "tokenizer.model"
 }
