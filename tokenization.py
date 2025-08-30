@@ -20,6 +20,7 @@ from typing import (
 from unittest import TestCase
 import tiktoken
 from tiktoken.load import load_tiktoken_bpe
+import transformers
 
 
 logger = getLogger(__name__)
@@ -312,3 +313,34 @@ class TokenizerTests(TestCase):
                 271,     # "\n\n"
             ]
         )
+
+
+class AutoTokenizer:
+    def __init__(self, tfile):
+        if tfile.endswith('.model'):
+            self.tokenizer = Tokenizer(tfile)
+            self.formatter = ChatFormat(self.tokenizer)
+        elif tfile.endswith('.json'):
+            self.tokenizer = transformers.AutoTokenizer.from_pretrained(os.path.dirname(tfile))
+        else:
+            raise ValueError('Unknown tokenizer file: ' + tfile)
+        if getattr(self.tokenizer, 'stop_tokens', None) is None:
+            self.stop_tokens = [self.tokenizer.eos_token_id]
+        else:
+            self.stop_tokens = self.tokenizer.stop_tokens
+    
+    def encode(self, text):
+        messages = [{"role": "user", "content": text}]
+        if getattr(self, 'formatter', None) is not None:
+            input_ids = self.formatter.encode_message(messages[0])
+        else:
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            input_ids = self.tokenizer.encode(text)
+        return input_ids
+    
+    def decode(self, tokens):
+        return self.tokenizer.decode(tokens)

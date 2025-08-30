@@ -12,7 +12,7 @@ from dacite import from_dict
 from torch import Tensor
 from typing import Optional
 from safetensors.torch import load_file
-from tokenization import Tokenizer, Message, ChatFormat
+from tokenization import AutoTokenizer
 import map_state_names
 
 
@@ -336,38 +336,13 @@ class SimpleChatApp:
         type_size = 1
         print('Model {} : params: {:4f}B'.format(model._get_name(), model.size() * type_size / 1000 / 1000 / 1000))
         tfile = os.path.join(base_dir, jf['tfile'])
-        if tfile.endswith('.model'):
-            self.tokenizer = Tokenizer(tfile)
-            self.formatter = ChatFormat(self.tokenizer)
-        elif tfile.endswith('.json'):
-            from transformers import AutoTokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(base_dir)
-        else:
-            raise ValueError('Unknown tokenizer file: ' + tfile)
-        if getattr(self.tokenizer, 'stop_tokens', None) is None:
-            self.tokenizer.stop_tokens = [self.tokenizer.eos_token_id]
+        self.tokenizer = AutoTokenizer(tfile)
         self.model = model.cuda()
 
     @torch.no_grad()
     def generate(self, input_text, temperature=0.9):
         self.model.assign_kv_cache(1)
-        if getattr(self, 'formatter', None) is not None:
-            message = {
-                "role": "user",
-                "content": input_text,
-            }
-            input_ids = self.formatter.encode_message(message)
-        else:
-            messages = [
-                {"role": "user", "content": input_text}
-            ]
-            text = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            print(text)
-            input_ids = self.tokenizer.encode(text)
+        input_ids = self.tokenizer.encode(input_text)
         T = len(input_ids)
         prompt = torch.empty([1, self.max_seq_len], device=self.model.device(), dtype=torch.long)
         input_pos = torch.arange(0, T, device=self.model.device())
