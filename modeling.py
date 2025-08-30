@@ -31,6 +31,7 @@ class ModelArgs:
     max_seq_len: int = 2048
     dropout_prob: float = 0.0
     dtype: str = 'torch.half'
+    rope_interval_split: bool = True
     # Optional
     use_qk_norm: bool = False
     explicit_ffn_dim: Optional[int] = None
@@ -92,30 +93,33 @@ class Attention(nn.Module):
             self.q_norm = RMSNorm(self.head_dim, args.norm_eps, args.dtype)
             self.k_norm = RMSNorm(self.head_dim, args.norm_eps, args.dtype)
         self.kv_cache = None
+        self.rope_interval_split = args.rope_interval_split
 
     @staticmethod
-    def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-        t = torch.arange(end, device=freqs.device, dtype=torch.float32)
-        freqs = torch.outer(t, freqs)
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
-        return freqs_cis
+    def precompute_freqs_cis(head_dim: int, max_position_embeddings: int, theta: float = 10000.0):
+        inv_freqs = 1.0 / (theta ** (
+            torch.arange(0, head_dim, 2, dtype=torch.int64)[: (head_dim // 2)].float() / head_dim))
+        t = torch.arange(max_position_embeddings, device=inv_freqs.device, dtype=torch.float32)
+        freqs = torch.outer(t, inv_freqs) # F(max_position_embeddings, head_dim/2)
+        return freqs.cos(), freqs.sin()
     
-    def apply_rotary_emb(self, xq, xk, freqs_cis):
-        def reshape_for_broadcast(freqs_cis, x):
-            ndim = x.ndim
-            assert 0 <= 1 < ndim
-            assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-            shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-            return freqs_cis.view(*shape)
-        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-        freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-        xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-        xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    def apply_rotary_emb(self, xq, xk, cos, sin):
+        cos = cos.unsqueeze(-2)
+        sin = sin.unsqueeze(-2) # F[t, 1, head_dim/2]
+        def apply(x):
+            if self.rope_interval_split:
+                x1, x2 = torch.chunk(x.reshape(*x.shape[:-1], -1, 2), 2, dim=-1)
+                x1, x2 = x1.squeeze(-1), x2.squeeze(-1)
+            else:
+                x1, x2 = torch.chunk(x.float(), 2, dim=-1) # 2 * (t, num_heads, head_dim/2)
+            y1 = x1 * cos - x2 * sin
+            y2 = x2 * cos + x1 * sin
+            return torch.cat((y1, y2), dim=-1)
+        xq_out = apply(xq)
+        xk_out = apply(xk)
         return xq_out.type_as(xq), xk_out.type_as(xk)
 
-    def forward(self, x, attention_mask, freqs_cis, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
+    def forward(self, x, attention_mask, cos, sin, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
         batch_size, seq_length, _ = x.size()
         # Infer xq, xk and xv
         xq = self.wq(x)
@@ -129,7 +133,7 @@ class Attention(nn.Module):
             xq = self.q_norm(xq)
             xk = self.k_norm(xk)
         # Apply RoPE
-        xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis)
+        xq, xk = self.apply_rotary_emb(xq, xk, cos, sin)
         # Refine xq, xk and xv shape
         xq, xk, xv = [item.transpose(1, 2).contiguous() for item in [xq, xk, xv]] # -> (b, nh, t, hs)
         if self.kv_cache is not None:
@@ -214,12 +218,12 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(args.dim, args.norm_eps, args.dtype)
         self.ffn_norm = RMSNorm(args.dim, args.norm_eps, args.dtype)
 
-    def forward(self, x, attention_mask, freqs_cis, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
-        x = x + self.attention(self.attention_norm(x), attention_mask, freqs_cis, input_pos)
+    def forward(self, x, attention_mask, cos, sin, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
+        x = x + self.attention(self.attention_norm(x), attention_mask, cos, sin, input_pos)
         if self.enable_visual:
-            x = x + self.visual_attention(self.visual_norm(x), attention_mask, freqs_cis, input_pos, xa)
+            x = x + self.visual_attention(self.visual_norm(x), attention_mask, cos, sin, input_pos, xa)
         if self.enable_audio:
-            x = x + self.audio_attention(self.audio_norm(x), attention_mask, freqs_cis, input_pos, xa)
+            x = x + self.audio_attention(self.audio_norm(x), attention_mask, cos, sin, input_pos, xa)
         out = x + self.feed_forward(self.ffn_norm(x))
         return out
 
@@ -236,7 +240,7 @@ class Transformer(nn.Module):
         self.norm = RMSNorm(args.dim, args.norm_eps, args.dtype)
         self.output = nn.Linear(args.dim, self.vocab_size, bias=False, dtype=args.dtype)
         self.head_dim = args.head_dim if args.head_dim else args.dim // args.n_heads
-        self.freqs_cis = Attention.precompute_freqs_cis(
+        self.cos, self.sin = Attention.precompute_freqs_cis(
             self.head_dim,
             self.max_seq_len * 2,
             args.rope_theta,
@@ -269,17 +273,18 @@ class Transformer(nn.Module):
         # images: F[b, c, h, w]
         _, seq_length = tokens.size()
         h = self.tok_embeddings(tokens) # [b, t, hidden_size]
-        self.freqs_cis = self.freqs_cis.to(self.device())
+        self.cos = self.cos.to(self.device())
+        self.sin = self.sin.to(self.device())
 
         if input_pos is None:
             input_pos = torch.arange(0, seq_length, device=self.device())
-            freqs_cis = self.freqs_cis[input_pos]
+            cos, sin = self.cos[input_pos], self.sin[input_pos]
             causal_mask = self.causal_mask[None, None, :seq_length, :seq_length]
         else: # KV Cache enabled
-            freqs_cis = self.freqs_cis[input_pos]
+            cos, sin = self.cos[input_pos], self.sin[input_pos]
             causal_mask = self.causal_mask[None, None, input_pos]
         for layer in self.layers:
-            h = layer(h, causal_mask, freqs_cis, input_pos)
+            h = layer(h, causal_mask, cos, sin, input_pos)
         h = self.norm(h)
         return self.output(h)
 
@@ -363,7 +368,6 @@ class SimpleChatApp:
             )
             print(text)
             input_ids = self.tokenizer.encode(text)
-            # input_ids = self.tokenizer.encode(input_text)
         T = len(input_ids)
         prompt = torch.empty([1, self.max_seq_len], device=self.model.device(), dtype=torch.long)
         input_pos = torch.arange(0, T, device=self.model.device())

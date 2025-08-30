@@ -10,6 +10,7 @@
   "dtype": "torch.bfloat16",
   "explicit_ffn_dim": 9728,
   "use_qk_norm": true,
+  "rope_interval_split": false,
 
   "base_dir": "/home/xytpai/data/qwen3-4b",
   "wfiles": [

@@ -10,6 +10,7 @@
   "rope_theta": 500000.0,
   "use_scaled_rope": true,
   "dtype": "torch.half",
+  "rope_interval_split": true,
 
   "base_dir": "/home/xytpai/.llama/checkpoints/Llama3.2-1B-Instruct",
   "wfiles": ["consolidated.00.pth"],
