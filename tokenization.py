@@ -321,24 +321,22 @@ class AutoTokenizer:
             self.tokenizer = Tokenizer(tfile)
             self.formatter = ChatFormat(self.tokenizer)
         elif tfile.endswith('.json'):
-            self.tokenizer = transformers.AutoTokenizer.from_pretrained(os.path.dirname(tfile))
+            self.tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_file=tfile)
+            # self.tokenizer = transformers.AutoTokenizer.from_pretrained(os.path.dirname(tfile))
+            self.tokenizer.stop_tokens = [
+                self.tokenizer.added_tokens_encoder['<|endoftext|>'],
+                self.tokenizer.added_tokens_encoder['<|im_end|>']]
         else:
             raise ValueError('Unknown tokenizer file: ' + tfile)
-        if getattr(self.tokenizer, 'stop_tokens', None) is None:
-            self.stop_tokens = [self.tokenizer.eos_token_id]
-        else:
-            self.stop_tokens = self.tokenizer.stop_tokens
+        self.stop_tokens = self.tokenizer.stop_tokens
     
     def encode(self, text):
         messages = [{"role": "user", "content": text}]
         if getattr(self, 'formatter', None) is not None:
             input_ids = self.formatter.encode_dialog_prompt(messages)
         else:
-            text = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+            message = messages[0]
+            text = f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n<|im_start|>assistant\n\n"
             input_ids = self.tokenizer.encode(text)
         return input_ids
     
