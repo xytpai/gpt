@@ -316,12 +316,14 @@ class SimpleChatApp:
     def load_model(self, file):
         with open(file, 'r', encoding='utf-8') as f:
             jf = json.load(f)
+        base_dir = jf['base_dir']
+        tfile = os.path.join(base_dir, jf['tfile'])
+        self.tokenizer = AutoTokenizer(tfile)
         args = from_dict(data_class=ModelArgs, data=jf)
         args.dtype = eval(args.dtype)
         print(args)
         model = Transformer(args)
         state_dict = {}
-        base_dir = jf['base_dir']
         for wfile in jf['wfiles']:
             wfile = os.path.join(base_dir, wfile)
             if wfile.endswith('.safetensors'):
@@ -335,8 +337,6 @@ class SimpleChatApp:
             print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
         type_size = 1
         print('Model {} : params: {:4f}B'.format(model._get_name(), model.size() * type_size / 1000 / 1000 / 1000))
-        tfile = os.path.join(base_dir, jf['tfile'])
-        self.tokenizer = AutoTokenizer(tfile)
         self.model = model.cuda()
 
     @torch.no_grad()

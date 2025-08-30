@@ -332,7 +332,7 @@ class AutoTokenizer:
     def encode(self, text):
         messages = [{"role": "user", "content": text}]
         if getattr(self, 'formatter', None) is not None:
-            input_ids = self.formatter.encode_message(messages[0])
+            input_ids = self.formatter.encode_dialog_prompt(messages)
         else:
             text = self.tokenizer.apply_chat_template(
                 messages,
