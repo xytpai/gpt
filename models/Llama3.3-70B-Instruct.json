@@ -1,0 +1,23 @@
+{
+  "dim": 8192,
+  "n_layers": 80,
+  "n_heads": 64,
+  "n_kv_heads": 8,
+  "vocab_size": 128256,
+  "ffn_dim_multiplier": 1.3,
+  "multiple_of": 4096,
+  "norm_eps": 1e-05,
+  "rope_theta": 500000.0,
+  "use_scaled_rope": true,
+
+  "wfiles": [
+    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.00.pth",
+    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.01.pth",
+    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.02.pth",
+    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.03.pth",
+    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.04.pth",
+    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.05.pth",
+    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.06.pth",
+    "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/consolidated.07.pth"],
+  "tfile": "/home/xytpai/.llama/checkpoints/Llama3.3-70B-Instruct/tokenizer.model"
+}

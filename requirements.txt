@@ -2,3 +2,5 @@ torch
 dacite
 tiktoken
 blobfile
+safetensors
+accelerate

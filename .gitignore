@@ -143,7 +143,7 @@ summary/
 test.*
 out_*
 old_*
-test_*
+./test_*
 # vocab.json
 checkpoints/*.ckpt
 .datacache
