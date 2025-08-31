@@ -39,6 +39,7 @@ class ModelArgs:
     # MoE
     num_experts: int = 0
     num_activated_experts: int = 0
+    norm_experts_prob: bool = False
     # Training
     ignore_index: int = -1
 
@@ -174,27 +175,33 @@ class FeedForward(nn.Module):
 class MOEFeedForward(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
-        # Project to 4h. If using swiglu double the output width, see https://arxiv.org/pdf/2002.05202.pdf
-        hidden_dim = refine_hidden_dim(args.explicit_ffn_dim, 4 * args.dim, args.multiple_of, args.ffn_dim_multiplier)
-        self.gate = nn.Linear(args.dim, args.num_experts, bias=False)
-        self.w1 = nn.Parameter(torch.empty(args.num_experts, hidden_dim, args.dim))
-        self.w2 = nn.Parameter(torch.empty(args.num_experts, args.dim, hidden_dim))
-        self.w3 = nn.Parameter(torch.empty(args.num_experts, hidden_dim, args.dim))
-        self.dim = args.dim
+        self.num_experts = args.num_experts
         self.num_activated_experts = args.num_activated_experts
+        self.norm_experts_prob = args.norm_experts_prob
+        self.gate = nn.Linear(args.dim, args.num_experts, bias=False)
+        self.experts = nn.ModuleList([FeedForward(args) for _ in range(self.num_experts)])
 
     def forward(self, x):
-        x = x.view(-1, self.dim)
-        expert_weights = F.softmax(self.gate(x), dim=-1) # _, num_experts
-        expert_weights, expert_indices = torch.topk(expert_weights, self.num_activated_experts, dim=-1)
-        expert_weights /= expert_weights.sum(dim=-1, keepdim=True) # _, num_activated_experts
-        x1 = F.silu(torch.einsum('ti, taoi -> tao', 
-                                 x, self.w1[expert_indices])) # _, num_activated_experts, hidden_dim
-        x3 = torch.einsum('ti, taoi -> tao', 
-                          x, self.w3[expert_indices]) # _, num_activated_experts, hidden_dim
-        expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), 
-                                    self.w2[expert_indices]) # _, num_activated_experts, dim
-        return torch.einsum('tai,ta -> ti', expert_outs, expert_weights) # _, dim
+        batch_size, seq_length, dim = x.shape
+        x = x.view(-1, dim)
+        routing_weights = F.softmax(self.gate(x), dim=-1, dtype=torch.float) # -> F(BxS, num_experts)
+        routing_weights, selected_experts = torch.topk(routing_weights, self.num_activated_experts, dim=-1)
+        if self.norm_experts_prob:
+            routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        routing_weights = routing_weights.to(x.dtype) # -> F(BxS, num_activated_experts)
+
+        output = torch.zeros((batch_size * seq_length, dim), dtype=x.dtype, device=x.device)
+        expert_mask = F.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+        # -> F(num_experts, num_activated_experts, BxS)
+        expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+        for expert_idx in expert_hit:
+            expert_layer = self.experts[expert_idx]
+            idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+            current_state = x[None, top_x].reshape(-1, dim)
+            current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+            output.index_add_(0, top_x, current_hidden_states.to(x.dtype))
+        output = output.reshape(batch_size, seq_length, dim)
+        return output
 
 
 class TransformerBlock(nn.Module):
