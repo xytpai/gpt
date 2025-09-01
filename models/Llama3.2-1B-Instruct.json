@@ -12,7 +12,7 @@
   "dtype": "torch.half",
   "rope_interval_split": true,
 
-  "base_dir": "/home/xytpai/.llama/checkpoints/Llama3.2-1B-Instruct",
+  "base_dir": "/home/xytpai/data/Llama3.2-1B-Instruct",
   "wfiles": ["consolidated.00.pth"],
   "tfile": "tokenizer.model"
 }
