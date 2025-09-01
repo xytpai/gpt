@@ -30,6 +30,6 @@ But Mount Everest is generally considered the tallest mountain in the world!
 Simple CMD for inference using huggingface API:
 
 ```bash
-hf download Qwen/Qwen3-4B-Instruct-2507 ~/data/qwen3-4b/
+hf download Qwen/Qwen3-4B-Instruct-2507 --local-dir ~/data/qwen3-4b/
 python infer_hf.py ~/data/qwen3-4b/ "Introduce yourself in Chinese"
 ```
