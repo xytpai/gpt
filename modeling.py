@@ -62,10 +62,10 @@ class KVCache(nn.Module):
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim, norm_eps, dtype):
+    def __init__(self, dim, norm_eps, dtype, device):
         super().__init__()
         self.eps = norm_eps
-        self.weight = torch.nn.Parameter(torch.ones(dim, dtype=dtype))
+        self.weight = torch.nn.Parameter(torch.ones(dim, dtype=dtype, device=device))
 
     def forward(self, x):
         input_dtype = x.dtype
@@ -76,7 +76,7 @@ class RMSNorm(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelArgs, device: str):
         super().__init__()
         assert args.dim % args.n_heads == 0
         self.dropout_prob = args.dropout_prob
@@ -84,15 +84,15 @@ class Attention(nn.Module):
         self.head_dim = args.head_dim if args.head_dim else args.dim // args.n_heads
         self.n_rep = args.n_heads // self.n_kv_heads
         # weights
-        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False, dtype=args.dtype)
-        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype)
-        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype)
-        self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False, dtype=args.dtype)
+        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False, dtype=args.dtype, device=device)
+        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype, device=device)
+        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype, device=device)
+        self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False, dtype=args.dtype, device=device)
         # qk norm
         self.use_qk_norm = args.use_qk_norm
         if self.use_qk_norm:
-            self.q_norm = RMSNorm(self.head_dim, args.norm_eps, args.dtype)
-            self.k_norm = RMSNorm(self.head_dim, args.norm_eps, args.dtype)
+            self.q_norm = RMSNorm(self.head_dim, args.norm_eps, args.dtype, device)
+            self.k_norm = RMSNorm(self.head_dim, args.norm_eps, args.dtype, device)
         self.kv_cache = None
         self.rope_interval_split = args.rope_interval_split
 
@@ -160,26 +160,26 @@ def refine_hidden_dim(explicit_ffn_dim, hidden_dim, multiple_of=256, ffn_dim_mul
 
 
 class FeedForward(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelArgs, device: str):
         super().__init__()
         # Project to 4h. If using swiglu double the output width, see https://arxiv.org/pdf/2002.05202.pdf
         hidden_dim = refine_hidden_dim(args.explicit_ffn_dim, 4 * args.dim, args.multiple_of, args.ffn_dim_multiplier)
-        self.w1 = nn.Linear(args.dim, hidden_dim, bias=False, dtype=args.dtype)
-        self.w2 = nn.Linear(hidden_dim, args.dim, bias=False, dtype=args.dtype)
-        self.w3 = nn.Linear(args.dim, hidden_dim, bias=False, dtype=args.dtype)
+        self.w1 = nn.Linear(args.dim, hidden_dim, bias=False, dtype=args.dtype, device=device)
+        self.w2 = nn.Linear(hidden_dim, args.dim, bias=False, dtype=args.dtype, device=device)
+        self.w3 = nn.Linear(args.dim, hidden_dim, bias=False, dtype=args.dtype, device=device)
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
 class MOEFeedForward(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelArgs, device: str):
         super().__init__()
         self.num_experts = args.num_experts
         self.num_activated_experts = args.num_activated_experts
         self.norm_experts_prob = args.norm_experts_prob
         self.gate = nn.Linear(args.dim, args.num_experts, bias=False)
-        self.experts = nn.ModuleList([FeedForward(args) for _ in range(self.num_experts)])
+        self.experts = nn.ModuleList([FeedForward(args, device) for _ in range(self.num_experts)])
 
     def forward(self, x):
         batch_size, seq_length, dim = x.shape
@@ -205,25 +205,25 @@ class MOEFeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, layer_id: int, args: ModelArgs):
+    def __init__(self, layer_id: int, args: ModelArgs, device: str):
         super().__init__()
-        self.attention = Attention(args)
+        self.attention = Attention(args, device)
         if getattr(args, 'enable_visual', None):
-            self.visual_attention = Attention(args)
-            self.visual_norm = RMSNorm(args.dim, args.norm_eps, args.dtype)
+            self.visual_attention = Attention(args, device)
+            self.visual_norm = RMSNorm(args.dim, args.norm_eps, args.dtype, device)
             self.enable_visual = True
         else:
             self.enable_visual = False
         if getattr(args, 'enable_audio', None):
-            self.audio_attention = Attention(args)
-            self.audio_norm = RMSNorm(args.dim, args.norm_eps, args.dtype)
+            self.audio_attention = Attention(args, device)
+            self.audio_norm = RMSNorm(args.dim, args.norm_eps, args.dtype, device)
             self.enable_audio = True
         else:
             self.enable_audio = False
         self.layer_id = layer_id
-        self.feed_forward = FeedForward(args)
-        self.attention_norm = RMSNorm(args.dim, args.norm_eps, args.dtype)
-        self.ffn_norm = RMSNorm(args.dim, args.norm_eps, args.dtype)
+        self.feed_forward = FeedForward(args, device)
+        self.attention_norm = RMSNorm(args.dim, args.norm_eps, args.dtype, device)
+        self.ffn_norm = RMSNorm(args.dim, args.norm_eps, args.dtype, device)
 
     def forward(self, x, attention_mask, cos, sin, input_pos: Optional[Tensor]=None, xa: Optional[Tensor]=None):
         x = x + self.attention(self.attention_norm(x), attention_mask, cos, sin, input_pos)
@@ -236,16 +236,16 @@ class TransformerBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelArgs, device='cuda:0'):
         super().__init__()
         self.args = args
         self.vocab_size = args.vocab_size
         self.n_layers = args.n_layers
         self.max_seq_len = args.max_seq_len
-        self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim, dtype=args.dtype)
-        self.layers = nn.ModuleList([TransformerBlock(layer_id, args) for layer_id in range(args.n_layers)])
-        self.norm = RMSNorm(args.dim, args.norm_eps, args.dtype)
-        self.output = nn.Linear(args.dim, self.vocab_size, bias=False, dtype=args.dtype)
+        self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim, dtype=args.dtype, device=device)
+        self.layers = nn.ModuleList([TransformerBlock(layer_id, args, device) for layer_id in range(args.n_layers)])
+        self.norm = RMSNorm(args.dim, args.norm_eps, args.dtype, device)
+        self.output = nn.Linear(args.dim, self.vocab_size, bias=False, dtype=args.dtype, device=device)
         self.head_dim = args.head_dim if args.head_dim else args.dim // args.n_heads
         self.cos, self.sin = Attention.precompute_freqs_cis(
             self.head_dim,
@@ -253,7 +253,7 @@ class Transformer(nn.Module):
             args.rope_theta,
         )
         self.register_buffer('causal_mask', torch.tril(
-            torch.ones(self.max_seq_len, self.max_seq_len, dtype=torch.bool)), persistent=False)
+            torch.ones(self.max_seq_len, self.max_seq_len, dtype=torch.bool, device=device)), persistent=False)
 
     def device(self):
         return self.output.weight.device
@@ -344,7 +344,7 @@ class SimpleChatApp:
             print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
         type_size = 1
         print('Model {} : params: {:4f}B'.format(model._get_name(), model.size() * type_size / 1000 / 1000 / 1000))
-        self.model = model.cuda()
+        self.model = model
 
     @torch.no_grad()
     def generate(self, input_text, temperature=0.9):
