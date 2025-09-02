@@ -12,7 +12,7 @@
   "use_qk_norm": true,
   "rope_interval_split": false,
 
-  "base_dir": "/home/xytpai/data/qwen3-4b",
+  "base_dir": "/home/xytpai/data/Qwen3-4B-Instruct-2507",
   "wfiles": [
     "model-00001-of-00003.safetensors",
     "model-00002-of-00003.safetensors",
