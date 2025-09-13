@@ -1,19 +1,23 @@
 import os
 import time
 import json
-import tiktoken
 import numpy as np
+from dacite import from_dict
+from typing import Optional
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from dataclasses import dataclass
-from dacite import from_dict
+import torch.multiprocessing as mp
 from torch import Tensor
-from typing import Optional
 from safetensors.torch import load_file
-from tokenization import AutoTokenizer
+
 import map_state_names
+from tensor_parallel import ColumnParallelLinear, RowParallelLinear
+from distributed_utils import get_tensor_parallel_world_size
+from tokenization import AutoTokenizer
+from distributed_utils import init_tensor_parallel
 
 
 @dataclass
@@ -81,13 +85,16 @@ class Attention(nn.Module):
         assert args.dim % args.n_heads == 0
         self.dropout_prob = args.dropout_prob
         self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
+        parallel_size = get_tensor_parallel_world_size()
+        self.n_local_heads = args.n_heads // parallel_size
+        self.n_local_kv_heads = self.n_kv_heads // parallel_size
+        self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.head_dim if args.head_dim else args.dim // args.n_heads
-        self.n_rep = args.n_heads // self.n_kv_heads
         # weights
-        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False, dtype=args.dtype, device=device)
-        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype, device=device)
-        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype, device=device)
-        self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False, dtype=args.dtype, device=device)
+        self.wq = ColumnParallelLinear(args.dim, args.n_heads * self.head_dim, bias=False, dtype=args.dtype, device=device, gather_output=False)
+        self.wk = ColumnParallelLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype, device=device, gather_output=False)
+        self.wv = ColumnParallelLinear(args.dim, self.n_kv_heads * self.head_dim, bias=False, dtype=args.dtype, device=device, gather_output=False)
+        self.wo = RowParallelLinear(args.n_heads * self.head_dim, args.dim, bias=False, dtype=args.dtype, device=device, input_is_parallel=True)
         # qk norm
         self.use_qk_norm = args.use_qk_norm
         if self.use_qk_norm:
@@ -164,9 +171,9 @@ class FeedForward(nn.Module):
         super().__init__()
         # Project to 4h. If using swiglu double the output width, see https://arxiv.org/pdf/2002.05202.pdf
         hidden_dim = refine_hidden_dim(args.explicit_ffn_dim, 4 * args.dim, args.multiple_of, args.ffn_dim_multiplier)
-        self.w1 = nn.Linear(args.dim, hidden_dim, bias=False, dtype=args.dtype, device=device)
-        self.w2 = nn.Linear(hidden_dim, args.dim, bias=False, dtype=args.dtype, device=device)
-        self.w3 = nn.Linear(args.dim, hidden_dim, bias=False, dtype=args.dtype, device=device)
+        self.w1 = ColumnParallelLinear(args.dim, hidden_dim, bias=False, dtype=args.dtype, device=device, gather_output=False)
+        self.w2 = RowParallelLinear(hidden_dim, args.dim, bias=False, dtype=args.dtype, device=device, input_is_parallel=True)
+        self.w3 = ColumnParallelLinear(args.dim, hidden_dim, bias=False, dtype=args.dtype, device=device, gather_output=False)
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -245,7 +252,7 @@ class Transformer(nn.Module):
         self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim, dtype=args.dtype, device=device)
         self.layers = nn.ModuleList([TransformerBlock(layer_id, args, device) for layer_id in range(args.n_layers)])
         self.norm = RMSNorm(args.dim, args.norm_eps, args.dtype, device)
-        self.output = nn.Linear(args.dim, self.vocab_size, bias=False, dtype=args.dtype, device=device)
+        self.output = ColumnParallelLinear(args.dim, self.vocab_size, bias=False, dtype=args.dtype, device=device, gather_output=True)
         self.head_dim = args.head_dim if args.head_dim else args.dim // args.n_heads
         self.cos, self.sin = Attention.precompute_freqs_cis(
             self.head_dim,
@@ -310,26 +317,23 @@ class Transformer(nn.Module):
         return ids_next
 
 
-class SimpleChatApp:
-    def __init__(self, file, compile=False):
-        self.load_model(file)
-        if not compile:
-            self.enable_flash = True
-        else:
-            self.model = torch.compile(self.model)
-            self.enable_flash = False
-        self.max_seq_len = self.model.max_seq_len
-    
-    def load_model(self, file):
+class WorkerProc:
+    def __init__(self, file, world_size=1, tp_size=1):
         with open(file, 'r', encoding='utf-8') as f:
             jf = json.load(f)
+        args = from_dict(data_class=ModelArgs, data=jf)
+        args.dtype = eval(args.dtype)
+        self.args = args
         base_dir = jf['base_dir']
         tfile = os.path.join(base_dir, jf['tfile'])
         self.tokenizer = AutoTokenizer(tfile)
-        args = from_dict(data_class=ModelArgs, data=jf)
-        args.dtype = eval(args.dtype)
-        print(args)
-        model = Transformer(args)
+        self.load_state_dict(jf)
+        self.world_size = world_size
+        self.tp_size = tp_size
+        self.temperature = 0.9
+    
+    def load_state_dict(self, jf):
+        base_dir = jf['base_dir']
         state_dict = {}
         for wfile in jf['wfiles']:
             wfile = os.path.join(base_dir, wfile)
@@ -339,21 +343,17 @@ class SimpleChatApp:
                 ckpt = torch.load(wfile, map_location='cpu')
             state_dict.update(ckpt)
         state_dict = map_state_names.run(state_dict)
-        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
-        if len(missing_keys) > 0 or len(unexpected_keys) > 0:
-            print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
-        type_size = 1
-        print('Model {} : params: {:4f}B'.format(model._get_name(), model.size() * type_size / 1000 / 1000 / 1000))
-        self.model = model
-
+        self.state_dict = state_dict
+    
     @torch.no_grad()
-    def generate(self, input_text, temperature=0.9):
-        self.model.assign_kv_cache(1)
+    def generate(self, rank, model, input_text):
+        self.max_seq_len = model.max_seq_len
+        model.assign_kv_cache(1)
         input_ids = self.tokenizer.encode(input_text)
         T = len(input_ids)
-        prompt = torch.empty([1, self.max_seq_len], device=self.model.device(), dtype=torch.long)
-        input_pos = torch.arange(0, T, device=self.model.device())
-        prompt[:, input_pos] = torch.LongTensor(input_ids).to(self.model.device()).view(1, -1)
+        prompt = torch.empty([1, self.max_seq_len], device=model.device(), dtype=torch.long)
+        input_pos = torch.arange(0, T, device=model.device())
+        prompt[:, input_pos] = torch.LongTensor(input_ids).to(model.device()).view(1, -1)
         latency = []
         for i in range(self.max_seq_len - T):
             torch.cuda.synchronize()
@@ -361,8 +361,8 @@ class SimpleChatApp:
             # with torch.backends.cuda.sdp_kernel(
             #     enable_flash=self.enable_flash, enable_mem_efficient=self.enable_flash, enable_math=True):
             if True:
-                h = self.model(prompt[:, input_pos], input_pos)
-                idx_next = Transformer.post_pred(h, temperature)
+                h = model(prompt[:, input_pos], input_pos)
+                idx_next = Transformer.post_pred(h, self.temperature)
             torch.cuda.synchronize()
             end = time.time()
             latency.append(end - start)
@@ -370,19 +370,37 @@ class SimpleChatApp:
             word_next = self.tokenizer.decode([idx_next_item])
             if idx_next_item in self.tokenizer.stop_tokens:
                 break
-            print(word_next, end='', flush=True)
-            input_pos = torch.tensor([T], device=self.model.device(), dtype=torch.int)
+            if rank == 0:
+                print(word_next, end='', flush=True)
+            input_pos = torch.tensor([T], device=model.device(), dtype=torch.int)
             prompt[:, T] = idx_next
             T += 1
         latency = latency[10:]
         token_per_s = 1.0 / (sum(latency) / len(latency))
-        print(f'\ntoken_per_s:{token_per_s}')
+        if rank == 0:
+            print(f'\ntoken_per_s:{token_per_s}')
         return prompt
+    
+    def __call__(self, rank, input_text):
+        init_tensor_parallel(rank, self.world_size, self.tp_size)
+        model = Transformer(self.args, f"cuda:{rank}")
+        if self.world_size == 1:
+            missing_keys, unexpected_keys = model.load_state_dict(self.state_dict, strict=True)
+            if len(missing_keys) > 0 or len(unexpected_keys) > 0:
+                print('load model: ' + str({'missing_keys':missing_keys, 'unexpected_keys':unexpected_keys}))
+        else:
+            raise
+        if rank == 0:
+            type_size = 1
+            print('Model {} : params: {:4f}B'.format(model._get_name(), model.size() * type_size / 1000 / 1000 / 1000))
+        self.generate(rank, model, input_text)
 
 
 if __name__ == '__main__':
     import sys
     cpath = sys.argv[1]
     input_text = sys.argv[2]
-    chatapp = SimpleChatApp(cpath)
-    output = chatapp.generate(input_text)
+    world_size = 1
+    tp_size = 1
+    worker = WorkerProc(cpath, world_size, tp_size)
+    mp.spawn(worker, args=(input_text, ), nprocs=world_size, join=True)
