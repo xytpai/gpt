@@ -2,7 +2,7 @@ import os
 import re
 import sys
 import glob
-from safetensors.torch import load_file
+import json
 
 
 def ensure_divisibility(numerator: int, denominator: int) -> None:
@@ -18,79 +18,55 @@ def divide_and_check_no_remainder(numerator: int, denominator: int) -> int:
 
 
 class ExtractOps:
-    def __init__(self, hf_model_dir):
-        self.load_state_dict(hf_model_dir) 
-        self.extract_state_dict_meta()
+    def __init__(self, config_file):
+        self.load_config(config_file) 
     
-    def load_state_dict(self, hf_model_dir):
-        files = glob.glob(os.path.join(hf_model_dir, "*.safetensors"))
-        state_dict = {}
-        for file in files:
-            state_dict.update(load_file(file, device='cpu'))
-        self.state_dict = state_dict
-    
-    def extract_state_dict_meta(self):
-        new_state_dict = {}
-        for k, v in self.state_dict.items():
-            new_state_dict[k] = v.to('meta')
-        self.state_dict = new_state_dict
+    def load_config(self, config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f) 
+        self.config = config
+        self.dtype = config['torch_dtype']
+        self.hidden_size = self.config['hidden_size']
     
     def extract_attention_gemm(self, m=1, tp_size=1):
-        results = []
-        hidden_size = None
-        for key, meta in self.state_dict.items():
-            if ('.q_proj.weight' in key) or ('.k_proj.weight' in key) or ('.v_proj.weight' in key):
-                n = divide_and_check_no_remainder(meta.shape[0], tp_size)
-                k = meta.shape[1]
-                if not hidden_size:
-                    hidden_size = k
-                assert hidden_size == k
-                results.append(f"m={m}, n={n}, k={k}, dtype={meta.dtype}")
-            if '.o_proj.weight' in key:
-                n = meta.shape[0]
-                k = divide_and_check_no_remainder(meta.shape[1], tp_size)
-                if not hidden_size:
-                    hidden_size = n
-                assert hidden_size == n
-                results.append(f"m={m}, n={n}, k={k}, dtype={meta.dtype}")
-        results = list(set(results))
-        return sorted(results)
-    
+        q_n = self.config['head_dim'] * self.config['num_attention_heads']
+        q_n = divide_and_check_no_remainder(q_n, tp_size)
+        kv_n = self.config['head_dim'] * self.config['num_key_value_heads']
+        kv_n = divide_and_check_no_remainder(kv_n, tp_size)
+        qkv_k = self.hidden_size
+        results = [
+            f"m={m}, n={q_n}, k={qkv_k}, dtype={self.dtype}", # q
+            f"m={m}, n={kv_n}, k={qkv_k}, dtype={self.dtype}", # kv
+            f"m={m}, n={qkv_k}, k={q_n}, dtype={self.dtype}", # o
+        ]
+        return sorted(list(set(results)))
+
     def extract_ffn_gemm(self, m=1, tp_size=1):
-        results = []
-        hidden_size = None
-        for key, meta in self.state_dict.items():
-            if ('.gate_proj.weight' in key) or ('.up_proj.weight' in key):
-                n = divide_and_check_no_remainder(meta.shape[0], tp_size)
-                k = meta.shape[1]
-                if not hidden_size:
-                    hidden_size = k
-                assert hidden_size == k
-                results.append(f"m={m}, n={n}, k={k}, dtype={meta.dtype}")
-            if '.down_proj.weight' in key:
-                n = meta.shape[0]
-                k = divide_and_check_no_remainder(meta.shape[1], tp_size)
-                if not hidden_size:
-                    hidden_size = n
-                assert hidden_size == n
-                results.append(f"m={m}, n={n}, k={k}, dtype={meta.dtype}")
-        results = list(set(results))
-        return sorted(results)
+        gate_up_n = divide_and_check_no_remainder(self.config['intermediate_size'], tp_size)
+        gate_up_k = self.hidden_size
+        down_n = gate_up_k
+        down_k = gate_up_n
+        results = [
+            f"m={m}, n={gate_up_n}, k={gate_up_k}, dtype={self.dtype}", 
+            f"m={m}, n={down_n}, k={down_k}, dtype={self.dtype}", 
+        ]
+        return sorted(list(set(results)))
     
     def extract_output_gemm(self, m=1, tp_size=1):
-        results = []
-        for key, meta in self.state_dict.items():
-            if 'output.weight' in key:
-                n = divide_and_check_no_remainder(meta.shape[0], tp_size)
-                k = meta.shape[1]
-                results.append(f"m={m}, n={n}, k={k}, dtype={meta.dtype}")
-        results = list(set(results))
-        return sorted(results)
+        vocab_size = divide_and_check_no_remainder(self.config['vocab_size'], tp_size)
+        results = [
+            f"m={m}, n={vocab_size}, k={self.hidden_size}, dtype={self.dtype}", 
+        ]
+        return results
     
-    def print_gemms(self, results):
-        for s in results:
-            m, n, k, _ = map(int, re.findall(r"\d+", s))
-            print(m, n, k)
+    def extract_attention(self, batch_size=1, seq_len=1, tp_size=1):
+        nhead_q = self.config['num_attention_heads']
+        nhead_kv = self.config['num_key_value_heads']
+        head_dim = self.config['head_dim']
+        results = [
+            f"batch_size={batch_size}, seq_len={seq_len}, nhead_q={nhead_q}, nhead_kv={nhead_kv}, head_dim={head_dim}, dtype={self.dtype}", 
+        ]
+        return results
 
 
 if __name__ == '__main__':
@@ -100,14 +76,11 @@ if __name__ == '__main__':
     ffn_gemms = eo.extract_ffn_gemm()
     output_gemms = eo.extract_output_gemm()
     all_gemms = sorted(set(attention_gemms + ffn_gemms + output_gemms))
-    print(hf_model_dir, "all_gemms: m,n,k,dtype")
+    attentions = eo.extract_attention()
+    print(hf_model_dir)
+    print("all_gemms")
     for gemm in all_gemms:
         print(gemm)
-
-    print(' ')
-    print('attention_gemms')
-    eo.print_gemms(attention_gemms)
-    print('ffn_gemms')
-    eo.print_gemms(ffn_gemms)
-    print('output_gemms')
-    eo.print_gemms(output_gemms)
+    print("attentions")
+    for attention in attentions:
+        print(attention)
