@@ -187,14 +187,16 @@ class ExtractHFOpsDeepSeek(ExtractHFOpsBase):
         return metas, self.ffn_moe_layers
         
     def extract_attentions(self, batch_size=1, seq_len=1, tp_size=1):
-        # mha
-        nhead_q = divide_and_check_no_remainder(self.config['num_attention_heads'], tp_size)
-        nhead_kv = divide_and_check_no_remainder(self.config['num_key_value_heads'], tp_size)
-        head_dim = self.qk_nope_head_dim + self.qk_rope_head_dim
-        metas = [
-            f"batch_size={batch_size}, seq_len={seq_len}, nhead_q={nhead_q}, nhead_kv={nhead_kv}, head_dim={head_dim}, dtype={self.dtype}", 
-        ]
-        return metas, self.num_hidden_layers
+        if self.mha:
+            nhead_q = divide_and_check_no_remainder(self.config['num_attention_heads'], tp_size)
+            nhead_kv = divide_and_check_no_remainder(self.config['num_key_value_heads'], tp_size)
+            head_dim = self.qk_nope_head_dim + self.qk_rope_head_dim
+            metas = [
+                f"batch_size={batch_size}, seq_len={seq_len}, nhead_q={nhead_q}, nhead_kv={nhead_kv}, head_dim={head_dim}, dtype={self.dtype}", 
+            ]
+            return metas, self.num_hidden_layers
+        else:
+            raise NotImplementedError("Not implemented for non-MHA.")
 
 
 def get_method(config_file):
