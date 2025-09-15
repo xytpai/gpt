@@ -148,3 +148,4 @@ old_*
 checkpoints/*.ckpt
 .datacache
 *.ckpt
+*.csv

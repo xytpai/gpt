@@ -1,6 +1,9 @@
 import os
 import sys
 import copy
+import glob
+import re
+import csv
 import torch
 import torch.nn.functional as F
 import pandas as pd
@@ -197,34 +200,59 @@ def get_trace_perf(prof, num_iters):
 
 
 torch.set_default_device('cuda')
+fp_8_dtype = torch.float8_e4m3fn
 
 
 @benchmark_func()
-def run_torch_gemm(x, w):
-    out = F.linear(x, w)
+def run_torch_gemm(x, w, scale_a, scale_b):
+    if x.dtype == fp_8_dtype:
+        out = torch._scaled_mm(x, w.t(),
+                out_dtype=torch.bfloat16,
+                scale_a=scale_a,
+                scale_b=scale_b,
+                bias=None,
+            )
+    else:
+        out = F.linear(x, w)
     return out
 
 
 def test_gemm(dtype, m, n, k):
-    x = torch.randn((m, k), dtype=dtype)
-    w = torch.randn((n, k), dtype=dtype)
-    device_us = float(run_torch_gemm(x, w))
+    x = torch.randn((m, k), dtype=torch.float).to(dtype)
+    w = torch.randn((n, k), dtype=torch.float).to(dtype)
+    scale_a = torch.ones(1, dtype=torch.float)
+    scale_b = torch.ones(1, dtype=torch.float)
+    device_us = float(run_torch_gemm(x, w, scale_a, scale_b))
     tflops = 2 * m * n * k / (device_us) / 1e6
     return tflops
 
 
-if __name__ == "__main__":
-    config_file = sys.argv[1]
+@benchmark_func()
+def run_torch_sdpa(q, k, v):
+    out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True)
+    return out
+
+
+def test_sdpa(dtype, batch_size, seq_len, nhead_q, nhead_kv, head_dim):
+    q = torch.randn((batch_size, seq_len, nhead_q, head_dim), dtype=dtype)
+    k = torch.randn((batch_size, seq_len, nhead_kv, head_dim), dtype=dtype)
+    v = torch.randn((batch_size, seq_len, nhead_kv, head_dim), dtype=dtype)
+    device_us = float(run_torch_sdpa(q, k, v))
+    tflops = device_us
+    return tflops
+
+
+def test_model_gemm(config_file):
     print(config_file)
     method = get_extract_method(config_file)(config_file)
     print("nparams:", method.check_num_parameters(), "B")
+    dtypes = [fp_8_dtype, torch.bfloat16]
     tp_sizes = [1, 4, 8]
-    dtypes = [torch.bfloat16]
-    ms = [i * 1024 for i in [1, 2]]
-    pbar = tqdm(total=len(tp_sizes) * len(dtypes) * len(ms))
+    ms = [i * 1024 for i in [2]]
+    pbar = tqdm(total=len(dtypes) * len(tp_sizes) * len(ms))
     results = []
-    for tp_size in tp_sizes:
-        for dtype in dtypes:
+    for dtype in dtypes:
+        for tp_size in tp_sizes:
             for m in ms:
                 gemm_shapes = method.extract_gemm_shapes(m=m, tp_size=tp_size)
                 for mnk in gemm_shapes:
@@ -233,7 +261,60 @@ if __name__ == "__main__":
                     n = int(mnk[1].strip())
                     k = int(mnk[2].strip())
                     tflops = test_gemm(dtype, m, n, k)
-                    results.append([dtype, m, n, k, tflops])
+                    results.append([config_file, dtype, tp_size, m, n, k, tflops])
                 pbar.update(1)
-    for r in results:
-        print(r)
+    return results
+
+
+def test_model_sdpa(config_file):
+    print(config_file)
+    method = get_extract_method(config_file)(config_file)
+    print("nparams:", method.check_num_parameters(), "B")
+    dtypes = [torch.bfloat16]
+    tp_sizes = [1, 4]
+    batch_sizes = [1, 4, 8]
+    seq_lens = [1024, 2048]
+    pbar = tqdm(total=len(dtypes) * len(tp_sizes) * len(batch_sizes) * len(seq_lens))
+    results = []
+    for dtype in dtypes:
+        for tp_size in tp_sizes:
+            for batch_size in batch_sizes:
+                for seq_len in seq_lens:
+                    attention_shapes, cnt = method.extract_attentions(batch_size=batch_size, seq_len=seq_len, tp_size=tp_size)
+                    for shape in attention_shapes:
+                        batch_size, seq_len, nhead_q, nhead_kv, head_dim, _ = re.findall(r"\d+", shape)
+                        batch_size = int(batch_size)
+                        seq_len = int(seq_len)
+                        nhead_q = int(nhead_q)
+                        nhead_kv = int(nhead_kv)
+                        head_dim = int(head_dim)
+                        tflops = test_sdpa(dtype, batch_size, seq_len, nhead_q, nhead_kv, head_dim)
+                        results.append([config_file, dtype, batch_size, seq_len, nhead_q, nhead_kv, head_dim, tflops])
+                    pbar.update(1)
+    return results
+
+
+if __name__ == "__main__":
+    config_dir = sys.argv[1]
+    config_files = sorted(glob.glob(f"{config_dir}/*.json"))
+
+    print('\ntest sdpas ...\n')
+    attention_results = []
+    for config_file in config_files:
+        attention_results += test_model_sdpa(config_file)
+    datas = [['config_file', 'dtype', 'batch_size', 'seq_len', 'nhead_q', 'nhead_kv', 'head_dim', 'tflops']]
+    datas += attention_results
+    with open("output_attentions.csv", mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerows(datas)
+    
+
+    print('\ntest gemms ...\n')
+    gemm_results = []
+    for config_file in config_files:
+        gemm_results += test_model_gemm(config_file)
+    datas = [['config_file', 'dtype', 'tp_size', 'm', 'n', 'k', 'tflops']]
+    datas += gemm_results
+    with open("output_gemms.csv", mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerows(datas)
