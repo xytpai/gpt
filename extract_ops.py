@@ -41,9 +41,9 @@ class ExtractOps:
         kv_n = divide_and_check_no_remainder(kv_n, tp_size)
         qkv_k = self.hidden_size
         results = [
-            f"m={m}, n={q_n}, k={qkv_k}, dtype={self.dtype}", # q
-            f"m={m}, n={kv_n}, k={qkv_k}, dtype={self.dtype}", # kv
-            f"m={m}, n={qkv_k}, k={q_n}, dtype={self.dtype}", # o
+            f"m={m}, n={q_n}, k={qkv_k}, dtype={self.dtype}, flag=q_proj", # q
+            f"m={m}, n={kv_n}, k={qkv_k}, dtype={self.dtype}, flag=kv_proj", # kv
+            f"m={m}, n={qkv_k}, k={q_n}, dtype={self.dtype}, flag=o_proj", # o
         ]
         return sorted(list(set(results)))
 
@@ -57,15 +57,20 @@ class ExtractOps:
         down_n = gate_up_k
         down_k = gate_up_n
         results = [
-            f"m={m}, n={gate_up_n}, k={gate_up_k}, dtype={self.dtype}", 
-            f"m={m}, n={down_n}, k={down_k}, dtype={self.dtype}", 
+            f"m={m}, n={gate_up_n}, k={gate_up_k}, dtype={self.dtype}, flag=gate_up_proj", 
+            f"m={m}, n={down_n}, k={down_k}, dtype={self.dtype}, flag=down_proj", 
         ]
+        if self.moe_intermediate_size:
+            num_experts = self.config['num_experts']
+            results.append(
+                f"m={m}, n={num_experts}, k={self.hidden_size}, dtype={self.dtype}, flag=experts_selection"
+            )
         return sorted(list(set(results)))
     
     def extract_output_gemm(self, m=1, tp_size=1):
         vocab_size = divide_and_check_no_remainder(self.config['vocab_size'], tp_size)
         results = [
-            f"m={m}, n={vocab_size}, k={self.hidden_size}, dtype={self.dtype}", 
+            f"m={m}, n={vocab_size}, k={self.hidden_size}, dtype={self.dtype}, flag=output", 
         ]
         return results
     
