@@ -27,11 +27,17 @@ class ExtractOps:
         self.config = config
         self.dtype = config['torch_dtype']
         self.hidden_size = self.config['hidden_size']
+        if self.config.get('head_dim', None):
+            self.head_dim = self.config['head_dim']
+        else:
+            self.head_dim = divide_and_check_no_remainder(
+                self.hidden_size, self.config['num_attention_heads'])
+        self.moe_intermediate_size = self.config.get('moe_intermediate_size', None)
     
     def extract_attention_gemm(self, m=1, tp_size=1):
-        q_n = self.config['head_dim'] * self.config['num_attention_heads']
+        q_n = self.head_dim * self.config['num_attention_heads']
         q_n = divide_and_check_no_remainder(q_n, tp_size)
-        kv_n = self.config['head_dim'] * self.config['num_key_value_heads']
+        kv_n = self.head_dim * self.config['num_key_value_heads']
         kv_n = divide_and_check_no_remainder(kv_n, tp_size)
         qkv_k = self.hidden_size
         results = [
@@ -42,7 +48,11 @@ class ExtractOps:
         return sorted(list(set(results)))
 
     def extract_ffn_gemm(self, m=1, tp_size=1):
-        gate_up_n = divide_and_check_no_remainder(self.config['intermediate_size'], tp_size)
+        if self.moe_intermediate_size:
+            intermediate_size = self.moe_intermediate_size
+        else:
+            intermediate_size = self.config['intermediate_size']
+        gate_up_n = divide_and_check_no_remainder(intermediate_size, tp_size)
         gate_up_k = self.hidden_size
         down_n = gate_up_k
         down_k = gate_up_n
@@ -62,7 +72,7 @@ class ExtractOps:
     def extract_attention(self, batch_size=1, seq_len=1, tp_size=1):
         nhead_q = self.config['num_attention_heads']
         nhead_kv = self.config['num_key_value_heads']
-        head_dim = self.config['head_dim']
+        head_dim = self.head_dim
         results = [
             f"batch_size={batch_size}, seq_len={seq_len}, nhead_q={nhead_q}, nhead_kv={nhead_kv}, head_dim={head_dim}, dtype={self.dtype}", 
         ]
@@ -71,16 +81,25 @@ class ExtractOps:
 
 if __name__ == '__main__':
     hf_model_dir = sys.argv[1]
-    eo = ExtractOps(hf_model_dir)
-    attention_gemms = eo.extract_attention_gemm()
-    ffn_gemms = eo.extract_ffn_gemm()
-    output_gemms = eo.extract_output_gemm()
-    all_gemms = sorted(set(attention_gemms + ffn_gemms + output_gemms))
-    attentions = eo.extract_attention()
     print(hf_model_dir)
-    print("all_gemms")
-    for gemm in all_gemms:
+    eo = ExtractOps(hf_model_dir)
+
+    attention_gemms = eo.extract_attention_gemm()
+    print("attention_gemms")
+    for gemm in attention_gemms:
         print(gemm)
+
+    ffn_gemms = eo.extract_ffn_gemm()
+    print("ffn_gemms")
+    for gemm in ffn_gemms:
+        print(gemm)
+    
+    output_gemms = eo.extract_output_gemm()
+    print("output_gemms")
+    for gemm in output_gemms:
+        print(gemm)
+    
+    attentions = eo.extract_attention()
     print("attentions")
     for attention in attentions:
         print(attention)
