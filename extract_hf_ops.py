@@ -114,7 +114,7 @@ class ExtractHFOpsBase:
                 gemms += method_gemms
         shapes = []
         for gemm_meta in gemms:
-            print(gemm_meta)
+            # print(gemm_meta)
             m, n, k, _ = nums = re.findall(r"\d+", gemm_meta)
             shapes.append(f"{m}, {n}, {k}")
         shapes = sorted(list(set(shapes)))
@@ -199,7 +199,7 @@ class ExtractHFOpsDeepSeek(ExtractHFOpsBase):
             raise NotImplementedError("Not implemented for non-MHA.")
 
 
-def get_method(config_file):
+def get_extract_method(config_file):
     if 'DeepSeek-V3' in config_file:
         return ExtractHFOpsDeepSeek
     else:
@@ -209,7 +209,7 @@ def get_method(config_file):
 if __name__ == '__main__':
     config_file = sys.argv[1]
     print(config_file)
-    eo = get_method(config_file)(config_file)
+    eo = get_extract_method(config_file)(config_file)
     gemm_shapes = eo.extract_gemm_shapes()
     for mnk in gemm_shapes:
         print(mnk)

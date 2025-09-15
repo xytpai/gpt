@@ -5,3 +5,5 @@ blobfile
 safetensors
 accelerate
 transformers
+pandas
+tqdm
