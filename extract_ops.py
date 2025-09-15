@@ -5,6 +5,10 @@ import glob
 import json
 
 
+QKV_MERGED_GEMM = True
+GATE_UP_MERGED_GEMM = True
+
+
 def ensure_divisibility(numerator: int, denominator: int) -> None:
     """Ensure that numerator is divisible by the denominator."""
     assert numerator % denominator == 0, "{} is not divisible by {}".format(numerator, denominator)
@@ -40,11 +44,18 @@ class ExtractOps:
         kv_n = self.head_dim * self.config['num_key_value_heads']
         kv_n = divide_and_check_no_remainder(kv_n, tp_size)
         qkv_k = self.hidden_size
-        results = [
-            f"m={m}, n={q_n}, k={qkv_k}, dtype={self.dtype}, flag=q_proj", # q
-            f"m={m}, n={kv_n}, k={qkv_k}, dtype={self.dtype}, flag=kv_proj", # kv
-            f"m={m}, n={qkv_k}, k={q_n}, dtype={self.dtype}, flag=o_proj", # o
-        ]
+        global QKV_MERGED_GEMM
+        if not QKV_MERGED_GEMM:
+            results = [
+                f"m={m}, n={q_n}, k={qkv_k}, dtype={self.dtype}, flag=q_proj",
+                f"m={m}, n={kv_n}, k={qkv_k}, dtype={self.dtype}, flag=kv_proj",
+                f"m={m}, n={qkv_k}, k={q_n}, dtype={self.dtype}, flag=o_proj",
+            ]
+        else:
+            results = [
+                f"m={m}, n={q_n + 2 * kv_n}, k={qkv_k}, dtype={self.dtype}, flag=qkv_proj",
+                f"m={m}, n={qkv_k}, k={q_n}, dtype={self.dtype}, flag=o_proj",
+            ]
         return sorted(list(set(results)))
 
     def extract_ffn_gemm(self, m=1, tp_size=1):
@@ -56,12 +67,19 @@ class ExtractOps:
         gate_up_k = self.hidden_size
         down_n = gate_up_k
         down_k = gate_up_n
-        results = [
-            f"m={m}, n={gate_up_n}, k={gate_up_k}, dtype={self.dtype}, flag=gate_up_proj", 
-            f"m={m}, n={down_n}, k={down_k}, dtype={self.dtype}, flag=down_proj", 
-        ]
+        global GATE_UP_MERGED_GEMM
+        if not GATE_UP_MERGED_GEMM:
+            results = [
+                f"m={m}, n={gate_up_n}, k={gate_up_k}, dtype={self.dtype}, flag=gate_up_proj", 
+                f"m={m}, n={down_n}, k={down_k}, dtype={self.dtype}, flag=down_proj", 
+            ]
+        else:
+            results = [
+                f"m={m}, n={gate_up_n * 2}, k={gate_up_k}, dtype={self.dtype}, flag=gate_up_proj", 
+                f"m={m}, n={down_n}, k={down_k}, dtype={self.dtype}, flag=down_proj", 
+            ]
         if self.moe_intermediate_size:
-            num_experts = self.config['num_experts']
+            num_experts = self.config.get('num_experts', self.config['n_routed_experts'])
             results.append(
                 f"m={m}, n={num_experts}, k={self.hidden_size}, dtype={self.dtype}, flag=experts_selection"
             )
