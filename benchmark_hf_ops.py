@@ -6,6 +6,7 @@ import re
 import csv
 import torch
 import torch.nn.functional as F
+from dataclasses import dataclass
 import pandas as pd
 from tqdm import tqdm
 from extract_hf_ops import get_extract_method
@@ -199,6 +200,60 @@ def get_trace_perf(prof, num_iters):
     return df.at[avg_name, "device_time_sum"]
 
 
+@dataclass
+class SDPARecord:
+    batch_size: int
+    num_heads_q: int
+    num_heads_kv: int
+    head_dim_qk: int
+    head_dim_v: int
+    seq_len_q: int
+    seq_len_kv: int
+    dtype: str
+    is_causal: bool = True
+
+
+class SDPAAnalyzer:
+    def __init__(self, record: SDPARecord):
+        self.batch_size = record.batch_size
+        self.num_heads_q = record.num_heads_q
+        self.num_heads_kv = record.num_heads_kv
+        self.head_dim_qk = record.head_dim_qk
+        self.head_dim_v = record.head_dim_v
+        self.seq_len_q = record.seq_len_q
+        self.seq_len_kv = record.seq_len_kv
+        self.dtype = record.dtype
+        self.is_causal = record.is_causal
+        if record.dtype == "torch.bfloat16" or record.dtype == "torch.float16":
+            self.element_bytes = 2
+        elif record.dtype == "torch.float":
+            self.element_bytes = 4
+        else:
+            raise "Data type not supported"
+        assert self.num_heads_q % self.num_heads_kv == 0
+
+    def getFLOP(self):
+        L2 = self.seq_len_q * self.seq_len_kv
+        if self.is_causal:
+            n = min(self.seq_len_q, self.seq_len_kv)
+            L2eff = (self.seq_len_kv + self.seq_len_kv - n + 1) * n / 2.0
+        else:
+            L2eff = L2
+        BH = self.batch_size * self.num_heads_q
+        qk_FLOP = 2 * BH * L2eff * self.head_dim_qk
+        qksv_FLOP = 2 * BH * L2 * self.head_dim_v
+        return qk_FLOP + qksv_FLOP
+
+    def getFlashAttnBytes(self):
+        read_q = self.batch_size * self.num_heads_q * self.seq_len_q * self.head_dim_qk
+        read_k = (
+            self.batch_size * self.num_heads_kv * self.seq_len_kv * self.head_dim_qk
+        )
+        read_v = self.batch_size * self.num_heads_kv * self.seq_len_kv * self.head_dim_v
+        write_o = self.batch_size * self.num_heads_q * self.seq_len_q * self.head_dim_v
+        return (read_q + read_k + read_v + write_o) * self.element_bytes
+
+
 torch.set_default_device('cuda')
 fp_8_dtype = torch.float8_e4m3fn
 
@@ -238,7 +293,19 @@ def test_sdpa(dtype, batch_size, seq_len, nhead_q, nhead_kv, head_dim):
     k = torch.randn((batch_size, seq_len, nhead_kv, head_dim), dtype=dtype)
     v = torch.randn((batch_size, seq_len, nhead_kv, head_dim), dtype=dtype)
     device_us = float(run_torch_sdpa(q, k, v))
-    tflops = device_us
+    record = SDPARecord(
+        batch_size=batch_size,
+        num_heads_q=nhead_q,
+        num_heads_kv=nhead_kv,
+        head_dim_qk=head_dim,
+        head_dim_v=head_dim,
+        seq_len_q=seq_len,
+        seq_len_kv=seq_len,
+        dtype=str(dtype),
+        is_causal=True)
+    ana = SDPAAnalyzer(record)
+    total_flop = ana.getFLOP()
+    tflops = total_flop * 1e-6 / device_us
     return tflops
 
 
@@ -308,7 +375,6 @@ if __name__ == "__main__":
         writer = csv.writer(f)
         writer.writerows(datas)
     
-
     print('\ntest gemms ...\n')
     gemm_results = []
     for config_file in config_files:
